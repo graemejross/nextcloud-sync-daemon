@@ -182,7 +182,7 @@ func TestEngineMultipleSources(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	if calls := exec.calls.Load(); calls < 2 {
 		t.Errorf("executor calls = %d, want >= 2 (one per source)", calls)
@@ -215,7 +215,7 @@ func TestEngineNonZeroExitContinues(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	// Engine should continue after non-zero exit, not stop
 	if calls := exec.calls.Load(); calls < 2 {
@@ -233,7 +233,7 @@ func TestEngineHealthRecording(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	// Health should have recorded syncs
 	calls := exec.calls.Load()
@@ -256,7 +256,7 @@ func TestEngineOnReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	if !readyCalled {
 		t.Error("OnReady callback was not called")

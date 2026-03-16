@@ -256,7 +256,7 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 
 ## Status
 
-**Phase 4 complete.** All three event sources implemented: filesystem watcher (fsnotify), webhook listener (HTTP server for Nextcloud push events), and polling fallback. The daemon is functionally equivalent to the prototype's four-component architecture, in a single binary. 68 tests across 6 packages. Phase 5 (health endpoint, systemd integration, CI, goreleaser) is next.
+**v0.1.0 — ready for release.** All five phases complete. Event-driven sync with filesystem watcher, webhook listener, and polling fallback. Health endpoint, systemd integration (sd_notify + watchdog), GitHub Actions CI, goreleaser for linux/amd64 + linux/arm64. 80 tests across 7 packages.
 
 ## Requirements
 
@@ -267,7 +267,7 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 - Python 3 (for the webhook listener)
 - systemd (for service management)
 
-### Go Daemon (planned)
+### Go Daemon
 - `nextcloudcmd`
 - That's it.
 

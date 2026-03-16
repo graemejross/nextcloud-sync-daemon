@@ -249,3 +249,71 @@ Phase 5 is the final phase — four components, mostly config files rather than 
 - **Commits:** 14 (10 in daemon repo, 4 in docs repo)
 - **Issues closed:** 7 (#1-8 except #3 and #9)
 - **Token usage:** ~718k tokens, ~$34.60
+
+---
+
+## Session 2 — 2026-03-16: Phase 5
+
+**Issue:** #9 (production readiness)
+**Commits:** `da22949`, `0187e8f`, `233248f`
+
+### What happened
+
+Implemented all Phase 5 components: health endpoint, systemd integration, CI pipeline, and release automation. This completes the project — the daemon is ready for v0.1.0.
+
+### Implementation
+
+**Health endpoint** (`internal/health/`) — the only new package with significant code. `Status` struct with `sync.RWMutex` tracking uptime, last sync result, sync/fail counts, and source running state. JSON response via `http.HandlerFunc`. 100% test coverage including a concurrent access hammer test (150 goroutines).
+
+**Engine wiring** — `engine.New()` now takes an optional `*health.Status` parameter. After each sync, calls `health.RecordSync()`. Source goroutines call `SetSourceRunning(true)` on start, `false` on stop via defer. Added `OnReady` callback field — called after sources start but before the main loop blocks. Existing tests pass `nil` for health (backward compatible).
+
+**Systemd integration** — Added `github.com/coreos/go-systemd/v22/daemon` (aliased as `sdnotify` to avoid conflict with `internal/daemon`). In `main.go`: `SdNotifyReady` via the `OnReady` callback, watchdog goroutine at half `WatchdogSec`, `SdNotifyStopping` on shutdown. Health HTTP server starts before the engine and shuts down on context cancellation.
+
+**CI** — GitHub Actions workflow: test + golangci-lint on push to main and PRs. Uses `golangci/golangci-lint-action@v6` for reliable linter installation.
+
+**goreleaser** — `.goreleaser.yml` v2 config for `linux/amd64` + `linux/arm64`. CGO disabled. Release workflow triggered on tag push (`v*`).
+
+### Key decisions
+
+**Go 1.23 upgrade.** `go-systemd v22.7.0` requires Go 1.23+. Go's toolchain directive handles this automatically — Go 1.22 (installed) downloads 1.23 as needed. Updated go.mod accordingly.
+
+**Health response uses pointer fields for optional data.** `last_sync`, `last_sync_duration_ms`, and `last_sync_trigger` are `*string`/`*int64` so they serialize as `null` (omitted) when no syncs have run yet, rather than empty/zero values.
+
+**Status logic: "ok" unless last sync failed.** Simple rule: `failCount` alone doesn't trigger "degraded" — only a failed *most recent* sync does. This means recovering from a failure (next sync succeeds) immediately returns to "ok".
+
+### Problems encountered
+
+1. **`go-systemd` module not found after `go get`.** Needed `go mod tidy` after `go get` to resolve the module graph — same issue as Phase 3 with fsnotify.
+
+2. **Import alias required.** `github.com/coreos/go-systemd/v22/daemon` would conflict with `internal/daemon`. The Phase 5 prompt anticipated this — used `sdnotify` alias as planned.
+
+### Test coverage
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 91.8% | 25 |
+| engine | 95.3% | 9 |
+| health | 100.0% | 10 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 9 |
+| watcher | 78.3% | 9 |
+| webhook | 89.5% | 14 |
+
+**Total: 80 tests across 7 packages.** Up from 68 tests in Phase 4.
+
+### Project complete
+
+All five phases are implemented. The daemon is a complete, single-binary replacement for the prototype's four-component architecture:
+
+| Component | Status |
+|-----------|--------|
+| Config loading + validation | Phase 1 ✓ |
+| Sync executor (nextcloudcmd wrapper) | Phase 1 ✓ |
+| Event loop engine with coalescing | Phase 2 ✓ |
+| Polling fallback | Phase 2 ✓ |
+| Filesystem watcher | Phase 3 ✓ |
+| Webhook listener | Phase 4 ✓ |
+| Health endpoint | Phase 5 ✓ |
+| Systemd integration | Phase 5 ✓ |
+| CI pipeline | Phase 5 ✓ |
+| Release automation | Phase 5 ✓ |

@@ -1,2 +1,6 @@
 sessions/
 prototype/config.sh
+/nextcloud-sync-daemon
+*.test
+coverage.out
+POST-COMPACT-CONTEXT-*.md

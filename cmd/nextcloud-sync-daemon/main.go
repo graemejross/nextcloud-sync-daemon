@@ -7,6 +7,9 @@ import (
 	"os"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/config"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 )
 
@@ -56,13 +59,7 @@ func run() int {
 
 	// Setup logging
 	logger := setupLogging(cfg)
-
 	logger.Info("loaded config", "path", cfgPath)
-
-	if !once {
-		fmt.Fprintf(os.Stderr, "error: daemon mode not yet implemented, use --once\n")
-		return 1
-	}
 
 	// Check nextcloudcmd exists
 	if err := sync.CheckNextcloudCmd(cfg.Sync.NextcloudCmd); err != nil {
@@ -70,16 +67,45 @@ func run() int {
 		return 1
 	}
 
-	// Run single sync
+	// Create executor
 	executor := sync.NewExecutor(cfg, logger)
+	ctx := makeContext()
 
-	result, err := executor.Run(makeContext())
-	if err != nil {
-		logger.Error("sync failed", "error", err)
+	if once {
+		// Run single sync and exit
+		result, err := executor.Run(ctx)
+		if err != nil {
+			logger.Error("sync failed", "error", err)
+			return 1
+		}
+		return result.ExitCode
+	}
+
+	// Daemon mode — build event sources and run engine
+	var sources []daemon.EventSource
+
+	if cfg.Poll.Enabled {
+		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
+	}
+
+	// Future: watcher and webhook sources will be added here in Phases 3 and 4
+
+	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, sources...)
+
+	logger.Info("starting daemon",
+		"version", version,
+		"poll", cfg.Poll.Enabled,
+		"watch", cfg.Watch.Enabled,
+		"webhook", cfg.Webhook.Enabled,
+	)
+
+	if err := eng.Run(ctx); err != nil {
+		logger.Error("engine error", "error", err)
 		return 1
 	}
 
-	return result.ExitCode
+	logger.Info("daemon stopped")
+	return 0
 }
 
 func setupLogging(cfg *config.Config) *slog.Logger {

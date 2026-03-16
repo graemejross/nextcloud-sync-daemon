@@ -1,0 +1,46 @@
+# Example systemd unit file for nextcloud-sync-daemon
+#
+# Install:
+#   sudo cp nextcloud-sync-daemon /usr/local/bin/
+#   sudo mkdir -p /etc/nextcloud-sync-daemon
+#   sudo cp config.yaml /etc/nextcloud-sync-daemon/
+#   sudo cp nextcloud-sync-daemon.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nextcloud-sync-daemon
+#
+# Or as a user service:
+#   mkdir -p ~/.config/systemd/user
+#   cp nextcloud-sync-daemon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now nextcloud-sync-daemon
+#   loginctl enable-linger $USER
+
+[Unit]
+Description=Nextcloud Sync Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify: daemon signals readiness after config validation and source startup
+Type=notify
+
+ExecStart=/usr/local/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
+
+# Restart on failure with 5-second delay
+Restart=on-failure
+RestartSec=5
+
+# Watchdog: daemon sends heartbeats every 60s (half this interval).
+# systemd restarts the daemon if heartbeats stop.
+WatchdogSec=120
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# Allow writes only to the sync directory — adjust this path
+ReadWritePaths=/home/user/nextcloud
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

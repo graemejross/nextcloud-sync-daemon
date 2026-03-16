@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"time"
 
+	sdnotify "github.com/coreos/go-systemd/v22/daemon"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/config"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
@@ -108,20 +113,65 @@ func run() int {
 		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
 	}
 
-	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, sources...)
+	// Health endpoint
+	var healthStatus *health.Status
+	if cfg.Health.Enabled {
+		healthStatus = health.NewStatus()
+		healthSrv := &http.Server{
+			Addr:    cfg.Health.Listen,
+			Handler: healthStatus.Handler(),
+		}
+		go func() {
+			logger.Info("health endpoint starting", "listen", cfg.Health.Listen)
+			if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("health server error", "error", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			healthSrv.Shutdown(context.Background())
+		}()
+	}
+
+	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, healthStatus, sources...)
+
+	// Systemd readiness notification — called after all sources start
+	eng.OnReady = func() {
+		sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
+		logger.Info("daemon ready")
+	}
+
+	// Systemd watchdog — send heartbeats at half the watchdog interval
+	if watchdogInterval, err := sdnotify.SdWatchdogEnabled(false); err == nil && watchdogInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(watchdogInterval / 2)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sdnotify.SdNotify(false, sdnotify.SdNotifyWatchdog)
+				}
+			}
+		}()
+	}
 
 	logger.Info("starting daemon",
 		"version", version,
 		"poll", cfg.Poll.Enabled,
 		"watch", cfg.Watch.Enabled,
 		"webhook", cfg.Webhook.Enabled,
+		"health", cfg.Health.Enabled,
 	)
 
 	if err := eng.Run(ctx); err != nil {
 		logger.Error("engine error", "error", err)
+		sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 		return 1
 	}
 
+	sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 	logger.Info("daemon stopped")
 	return 0
 }

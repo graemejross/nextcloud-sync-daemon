@@ -233,12 +233,16 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("logging.format %q is invalid (use text, json)", c.Logging.Format))
 	}
 
-	// At least one event source
-	if !c.Watch.Enabled && !c.Webhook.Enabled && !c.Poll.Enabled {
-		errs = append(errs, errors.New("at least one event source (watch, webhook, poll) must be enabled"))
-	}
-
 	return errors.Join(errs...)
+}
+
+// ValidateEventSources checks that at least one event source is enabled.
+// Called separately from Validate so that --once mode can skip this check.
+func (c *Config) ValidateEventSources() error {
+	if !c.Watch.Enabled && !c.Webhook.Enabled && !c.Poll.Enabled {
+		return errors.New("at least one event source (watch, webhook, poll) must be enabled for daemon mode")
+	}
+	return nil
 }
 
 // ResolvePassword returns the password, reading from password_file if configured.

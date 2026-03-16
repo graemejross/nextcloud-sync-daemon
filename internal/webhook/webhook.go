@@ -26,9 +26,10 @@ type Server struct {
 	logger     *slog.Logger
 
 	// Per-IP rate limiting
-	rateMu   sync.Mutex
-	rateMap  map[string]time.Time
-	rateMin  time.Duration // minimum interval between requests per IP
+	rateMu      sync.Mutex
+	rateMap     map[string]time.Time
+	rateMin     time.Duration // minimum interval between requests per IP
+	rateCleanup time.Time     // last time stale entries were purged
 }
 
 // New creates a webhook Server with per-IP rate limiting (5 seconds between requests per IP).
@@ -115,8 +116,18 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 		// Per-IP rate limiting
 		if s.rateMin > 0 {
 			ip := stripPort(r.RemoteAddr)
+			now := time.Now()
 			s.rateMu.Lock()
-			if last, ok := s.rateMap[ip]; ok && time.Since(last) < s.rateMin {
+			// Purge stale entries every 10 minutes to prevent unbounded growth
+			if now.Sub(s.rateCleanup) > 10*time.Minute {
+				for k, v := range s.rateMap {
+					if now.Sub(v) > s.rateMin {
+						delete(s.rateMap, k)
+					}
+				}
+				s.rateCleanup = now
+			}
+			if last, ok := s.rateMap[ip]; ok && now.Sub(last) < s.rateMin {
 				s.rateMu.Unlock()
 				s.logger.Warn("webhook rate-limited",
 					"remote", r.RemoteAddr,
@@ -126,7 +137,7 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 				fmt.Fprint(w, "rate limited")
 				return
 			}
-			s.rateMap[ip] = time.Now()
+			s.rateMap[ip] = now
 			s.rateMu.Unlock()
 		}
 

@@ -85,7 +85,8 @@ func run() int {
 
 	// Create executor
 	executor := sync.NewExecutor(cfg, logger)
-	ctx := makeContext()
+	ctx, stop := makeContext()
+	defer stop()
 
 	if once {
 		// Run single sync and exit
@@ -97,7 +98,12 @@ func run() int {
 		return result.ExitCode
 	}
 
-	// Daemon mode — build event sources and run engine
+	// Daemon mode — require at least one event source
+	if err := cfg.ValidateEventSources(); err != nil {
+		logger.Error("config error", "error", err)
+		return 1
+	}
+
 	var sources []daemon.EventSource
 
 	if cfg.Watch.Enabled {
@@ -138,7 +144,9 @@ func run() int {
 		}()
 		go func() {
 			<-ctx.Done()
-			_ = healthSrv.Shutdown(context.Background())
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = healthSrv.Shutdown(shutdownCtx)
 		}()
 	}
 

@@ -229,12 +229,6 @@ poll: {enabled: true}`,
 			"sync.local_dir is required",
 		},
 		{
-			"no event sources",
-			`server: {url: "https://x.com", username: a, password: b}
-sync: {local_dir: /tmp}`,
-			"at least one event source",
-		},
-		{
 			"webhook without secret",
 			`server: {url: "https://x.com", username: a, password: b}
 sync: {local_dir: /tmp}
@@ -430,6 +424,53 @@ func TestCheckPasswordFilePermissions(t *testing.T) {
 			t.Errorf("expected no warning for missing file, got %q", warn)
 		}
 	})
+}
+
+func TestValidateEventSources(t *testing.T) {
+	t.Run("no sources", func(t *testing.T) {
+		cfg := &Config{}
+		if err := cfg.ValidateEventSources(); err == nil {
+			t.Fatal("expected error when no sources enabled")
+		}
+	})
+
+	t.Run("poll enabled", func(t *testing.T) {
+		cfg := &Config{Poll: PollConfig{Enabled: true}}
+		if err := cfg.ValidateEventSources(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("watch enabled", func(t *testing.T) {
+		cfg := &Config{Watch: WatchConfig{Enabled: true}}
+		if err := cfg.ValidateEventSources(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("webhook enabled", func(t *testing.T) {
+		cfg := &Config{Webhook: WebhookConfig{Enabled: true}}
+		if err := cfg.ValidateEventSources(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestLoadWithoutSources verifies that Load succeeds when no event sources
+// are enabled — this supports --once mode which doesn't need sources.
+func TestLoadWithoutSources(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret123
+sync:
+  local_dir: /home/alice/nextcloud
+`)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should succeed without event sources for --once mode: %v", err)
+	}
 }
 
 func TestInvalidYAML(t *testing.T) {

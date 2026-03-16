@@ -47,4 +47,4 @@ PrivateTmp=yes
 ProtectProc=invisible
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

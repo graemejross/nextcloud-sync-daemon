@@ -6,8 +6,8 @@ import (
 	"syscall"
 )
 
-// makeContext returns a context that cancels on SIGTERM or SIGINT.
-func makeContext() context.Context {
-	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	return ctx
+// makeContext returns a context that cancels on SIGTERM or SIGINT,
+// and a stop function that deregisters the signal handler.
+func makeContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 }

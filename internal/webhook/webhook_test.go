@@ -370,6 +370,56 @@ func TestExtractPath(t *testing.T) {
 	}
 }
 
+func TestWebhookRateLimiting(t *testing.T) {
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger())
+	s.rateMin = 100 * time.Millisecond // short interval for testing
+	trigger := make(chan daemon.Event, 10)
+	handler := s.handler(trigger)
+
+	body := `{"event":{"class":"NodeWrittenEvent","node":{"path":"/test.txt"}}}`
+
+	// First request should succeed
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Webhook-Secret", "test-secret")
+	req.RemoteAddr = "192.168.1.1:12345"
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("first request: status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Second request from same IP should be rate-limited
+	req2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req2.Header.Set("X-Webhook-Secret", "test-secret")
+	req2.RemoteAddr = "192.168.1.1:12346" // same IP, different port
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("second request: status = %d, want %d", w2.Code, http.StatusTooManyRequests)
+	}
+
+	// Request from different IP should succeed
+	req3 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req3.Header.Set("X-Webhook-Secret", "test-secret")
+	req3.RemoteAddr = "192.168.1.2:12345"
+	w3 := httptest.NewRecorder()
+	handler(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Errorf("different IP request: status = %d, want %d", w3.Code, http.StatusOK)
+	}
+
+	// After waiting, same IP should succeed again
+	time.Sleep(150 * time.Millisecond)
+	req4 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req4.Header.Set("X-Webhook-Secret", "test-secret")
+	req4.RemoteAddr = "192.168.1.1:12347"
+	w4 := httptest.NewRecorder()
+	handler(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Errorf("after cooldown: status = %d, want %d", w4.Code, http.StatusOK)
+	}
+}
+
 func TestWebhookName(t *testing.T) {
 	s := New("", "", "/", quietLogger())
 	if s.Name() != "webhook" {

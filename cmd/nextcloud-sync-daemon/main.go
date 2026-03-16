@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	sdnotify "github.com/coreos/go-systemd/v22/daemon"
@@ -67,6 +68,14 @@ func run() int {
 	// Setup logging
 	logger := setupLogging(cfg)
 	logger.Info("loaded config", "path", cfgPath)
+
+	// Security warnings
+	if warn := cfg.CheckPasswordFilePermissions(); warn != "" {
+		logger.Warn(warn)
+	}
+	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Listen, "127.0.0.1") && !strings.HasPrefix(cfg.Health.Listen, "localhost") {
+		logger.Warn("health endpoint is accessible from the network — it exposes sync status information", "listen", cfg.Health.Listen)
+	}
 
 	// Check nextcloudcmd exists
 	if err := sync.CheckNextcloudCmd(cfg.Sync.NextcloudCmd); err != nil {

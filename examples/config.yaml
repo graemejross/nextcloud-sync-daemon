@@ -15,6 +15,16 @@ server:
   # password: your-app-password
   # Password file (read at each sync, supports rotation):
   password_file: /etc/nextcloud-sync-daemon/password
+  # SECURITY: Password file should have restricted permissions:
+  #   chmod 600 /etc/nextcloud-sync-daemon/password
+  # The daemon warns at startup if the file is readable by group/others.
+  #
+  # NOTE: The password is passed as a command-line argument to nextcloudcmd,
+  # which means it is visible via 'ps' to other users on the system.
+  # Mitigations:
+  #   - Use a Nextcloud app password (limited scope) instead of the main password
+  #   - Run the daemon as a dedicated user
+  #   - Use ProtectProc=invisible in the systemd unit (hides /proc from other users)
 
 sync:
   # Local directory to sync (required)
@@ -56,6 +66,7 @@ webhook:
 
   # Shared secret for webhook validation (required if webhook enabled)
   # Must match the secret configured in Nextcloud's webhook_listeners app
+  # Requests from the same IP are rate-limited to one every 5 seconds.
   # secret: your-webhook-secret
 
   # Only trigger sync for changes under this path prefix (default: /)
@@ -81,4 +92,6 @@ health:
   enabled: false
 
   # Address for health endpoint (default: 127.0.0.1:8768, localhost only)
+  # WARNING: If bound to 0.0.0.0, sync status (uptime, sync counts, failure
+  # rates, active sources, last sync time) is exposed to the network.
   listen: 127.0.0.1:8768

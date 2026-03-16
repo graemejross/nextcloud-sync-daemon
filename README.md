@@ -258,6 +258,19 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 
 **v0.1.0 — ready for release.** All five phases complete. Event-driven sync with filesystem watcher, webhook listener, and polling fallback. Health endpoint, systemd integration (sd_notify + watchdog), GitHub Actions CI, goreleaser for linux/amd64 + linux/arm64. 80 tests across 7 packages.
 
+## Security Considerations
+
+**Password exposure via process list.** The daemon passes the Nextcloud password as a command-line argument to `nextcloudcmd` (`-p PASSWORD`), which is visible via `ps` to other users on the same system. This is a limitation of `nextcloudcmd` — it does not support reading passwords from stdin or environment variables. Mitigations:
+
+- Use a **Nextcloud app password** (limited scope) rather than the main account password
+- Run the daemon as a **dedicated user** with restricted access
+- Use `ProtectProc=invisible` in the systemd unit (included in the example service file) to hide `/proc` entries from other users (requires systemd 247+)
+- Set password file permissions to `0600` — the daemon warns at startup if the file is world-readable
+
+**Webhook endpoint.** Authenticated with a shared secret using timing-safe comparison (`crypto/subtle`). Per-IP rate limiting (1 request per 5 seconds) protects against replay attacks. The endpoint accepts POST requests on a configurable port (default 8767).
+
+**Health endpoint.** Disabled by default. When enabled, it binds to `127.0.0.1:8768` (localhost only). If bound to a public address, it exposes operational information (uptime, sync counts, failure rates). The daemon warns at startup if the health endpoint is bound to a non-localhost address.
+
 ## Requirements
 
 ### Prototype (current)

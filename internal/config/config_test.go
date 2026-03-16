@@ -388,6 +388,50 @@ func TestFindConfigPath(t *testing.T) {
 	})
 }
 
+func TestCheckPasswordFilePermissions(t *testing.T) {
+	t.Run("safe permissions", func(t *testing.T) {
+		dir := t.TempDir()
+		pwFile := filepath.Join(dir, "password")
+		if err := os.WriteFile(pwFile, []byte("secret"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &Config{Server: ServerConfig{PasswordFile: pwFile}}
+		if warn := cfg.CheckPasswordFilePermissions(); warn != "" {
+			t.Errorf("expected no warning for 0600, got %q", warn)
+		}
+	})
+
+	t.Run("world-readable", func(t *testing.T) {
+		dir := t.TempDir()
+		pwFile := filepath.Join(dir, "password")
+		if err := os.WriteFile(pwFile, []byte("secret"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &Config{Server: ServerConfig{PasswordFile: pwFile}}
+		warn := cfg.CheckPasswordFilePermissions()
+		if warn == "" {
+			t.Error("expected warning for 0644, got empty string")
+		}
+		if !containsSubstring(warn, "0644") {
+			t.Errorf("warning should mention mode, got %q", warn)
+		}
+	})
+
+	t.Run("no password file", func(t *testing.T) {
+		cfg := &Config{Server: ServerConfig{Password: "inline"}}
+		if warn := cfg.CheckPasswordFilePermissions(); warn != "" {
+			t.Errorf("expected no warning for inline password, got %q", warn)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		cfg := &Config{Server: ServerConfig{PasswordFile: "/nonexistent/password"}}
+		if warn := cfg.CheckPasswordFilePermissions(); warn != "" {
+			t.Errorf("expected no warning for missing file, got %q", warn)
+		}
+	})
+}
+
 func TestInvalidYAML(t *testing.T) {
 	path := writeConfig(t, `{{{invalid yaml`)
 	_, err := Load(path)

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
@@ -23,15 +24,22 @@ type Server struct {
 	secret     string
 	pathFilter string
 	logger     *slog.Logger
+
+	// Per-IP rate limiting
+	rateMu   sync.Mutex
+	rateMap  map[string]time.Time
+	rateMin  time.Duration // minimum interval between requests per IP
 }
 
-// New creates a webhook Server.
+// New creates a webhook Server with per-IP rate limiting (5 seconds between requests per IP).
 func New(listen, secret, pathFilter string, logger *slog.Logger) *Server {
 	return &Server{
 		listen:     listen,
 		secret:     secret,
 		pathFilter: pathFilter,
 		logger:     logger,
+		rateMap:    make(map[string]time.Time),
+		rateMin:    5 * time.Second,
 	}
 }
 
@@ -104,6 +112,24 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 			return
 		}
 
+		// Per-IP rate limiting
+		if s.rateMin > 0 {
+			ip := stripPort(r.RemoteAddr)
+			s.rateMu.Lock()
+			if last, ok := s.rateMap[ip]; ok && time.Since(last) < s.rateMin {
+				s.rateMu.Unlock()
+				s.logger.Warn("webhook rate-limited",
+					"remote", r.RemoteAddr,
+					"min_interval", s.rateMin,
+				)
+				w.WriteHeader(http.StatusTooManyRequests)
+				fmt.Fprint(w, "rate limited")
+				return
+			}
+			s.rateMap[ip] = time.Now()
+			s.rateMu.Unlock()
+		}
+
 		// Read and parse body
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 		if err != nil {
@@ -168,4 +194,13 @@ func (s *Server) extractPath(body []byte) string {
 	}
 
 	return "unknown"
+}
+
+// stripPort removes the port from an address like "192.168.1.1:12345" or "[::1]:12345".
+func stripPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }

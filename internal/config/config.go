@@ -256,6 +256,23 @@ func (c *Config) ResolvePassword() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// CheckPasswordFilePermissions checks if the password file has safe permissions.
+// Returns a warning message if the file is readable by group or others, empty string if ok.
+func (c *Config) CheckPasswordFilePermissions() string {
+	if c.Server.PasswordFile == "" {
+		return ""
+	}
+	info, err := os.Stat(c.Server.PasswordFile)
+	if err != nil {
+		return "" // file missing is caught elsewhere
+	}
+	mode := info.Mode().Perm()
+	if mode&0077 != 0 {
+		return fmt.Sprintf("password file %s has mode %04o, recommend 0600", c.Server.PasswordFile, mode)
+	}
+	return ""
+}
+
 // FindConfigPath resolves the config file path using the 4-level resolution order:
 // 1. flagValue (--config flag)
 // 2. NEXTCLOUD_SYNC_CONFIG environment variable

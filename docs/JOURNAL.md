@@ -30,7 +30,7 @@ Created 6 issues (#4–#9) covering the full roadmap from scaffolding through pr
 
 ### Problems encountered
 
-1. **Go not installed.** clarence didn't have Go. Installed 1.22.12 to `/usr/local/go/`.
+1. **Go not installed.** Development machine didn't have Go. Installed 1.22.12 to `/usr/local/go/`.
 
 2. **`.gitignore` swallowed the source code.** The pattern `nextcloud-sync-daemon` (no leading slash) matched the `cmd/nextcloud-sync-daemon/` directory, hiding all CLI source files from git. Fixed to `/nextcloud-sync-daemon` (leading slash = root-level binary only). Caught because `git status` didn't show the cmd/ files.
 
@@ -317,3 +317,41 @@ All five phases are implemented. The daemon is a complete, single-binary replace
 | Systemd integration | Phase 5 ✓ |
 | CI pipeline | Phase 5 ✓ |
 | Release automation | Phase 5 ✓ |
+
+---
+
+## Session 2 (continued) — 2026-03-16: Security Hardening
+
+**Issues:** #10 (webhook rate limiting), #11 (password file perms), #12 (password in ps), #13 (health endpoint warning)
+
+### What happened
+
+Conducted a security audit of the v0.1.0 release before considering community contribution to the Nextcloud ecosystem. The audit identified three medium-risk issues and one low-risk issue. All four were fixed in this session.
+
+### Findings and fixes
+
+**Webhook replay attacks (#10).** The webhook endpoint had no protection against an attacker replaying valid requests to trigger excessive syncs. Added per-IP rate limiting — a `map[string]time.Time` with a mutex, enforcing a 5-second minimum interval between requests from the same source IP. Returns 429 Too Many Requests for rate-limited requests. The rate limiter sits after secret validation (so unauthenticated requests are rejected before hitting the rate limiter) but before body parsing (so rate-limited requests don't waste time parsing payloads).
+
+**Password file permissions (#11).** Added `CheckPasswordFilePermissions()` to the config package. At startup, if `password_file` is configured, the daemon stats the file and warns if group or other read bits are set (mode & 0077 != 0). Warning only, not a hard failure — some deployments may intentionally use group-readable files.
+
+**Password in process list (#12).** This is a `nextcloudcmd` limitation — it only accepts passwords via `-p` command-line argument, visible in `ps`. Cannot be fixed without upstream changes. Documented the risk in README (new Security Considerations section), example config, and example systemd unit. Added `ProtectProc=invisible` to the systemd service file (systemd 247+), which hides `/proc` entries from other users.
+
+**Health endpoint information disclosure (#13).** Added a startup warning if the health endpoint is bound to a non-localhost address. Updated example config with a WARNING comment about what the endpoint exposes.
+
+Also fixed a hostname leak in JOURNAL.md — "clarence" (a real infrastructure hostname) was mentioned in the Phase 1 problems section. Replaced with "Development machine".
+
+### Key decisions
+
+**Rate limit interval is hardcoded at 5 seconds.** Nextcloud sends webhooks per-event, not in bursts. 5 seconds is generous enough for legitimate use (Nextcloud wouldn't fire the same event type from the same source more than once per 5 seconds) while preventing replay floods. Not worth making configurable — it's a security control, not a user preference.
+
+**Password file check is a warning, not an error.** Hard-failing on permissions would break deployments using group-readable password files (e.g., shared between services). The warning gives operators the information; they decide the appropriate action.
+
+### Test coverage
+
+Added `TestWebhookRateLimiting` — tests same-IP blocking, different-IP passes, and recovery after cooldown expires. Added `TestCheckPasswordFilePermissions` — tests 0600 (safe), 0644 (warns), no password file, and missing file.
+
+| Package | New Tests | Total Tests |
+|---------|-----------|-------------|
+| webhook | +1 | 16 |
+| config | +4 | 29 |
+| **Total** | **+5** | **85** |

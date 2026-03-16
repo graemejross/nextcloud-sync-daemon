@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
 )
 
 func quietLogger() *slog.Logger {
@@ -83,7 +84,7 @@ func TestEngineSingleSync(t *testing.T) {
 	exec := &fakeExecutor{}
 	src := &fakeSource{name: "test", events: 1, interval: 10 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), src)
+	eng := New(exec, 0, quietLogger(), nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -100,7 +101,7 @@ func TestEngineCoalescing(t *testing.T) {
 	exec := &fakeExecutor{delay: 50 * time.Millisecond}
 	src := &fakeSource{name: "burst", events: 20, interval: 5 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), src)
+	eng := New(exec, 0, quietLogger(), nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -124,7 +125,7 @@ func TestEngineCooldown(t *testing.T) {
 	src := &fakeSource{name: "rapid", events: 0, interval: 10 * time.Millisecond}
 
 	// 200ms cooldown — should severely limit syncs
-	eng := New(exec, 200*time.Millisecond, quietLogger(), src)
+	eng := New(exec, 200*time.Millisecond, quietLogger(), nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -146,7 +147,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	exec := &fakeExecutor{delay: 50 * time.Millisecond}
 	src := &fakeSource{name: "test", events: 0, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), src)
+	eng := New(exec, 0, quietLogger(), nil, src)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -176,7 +177,7 @@ func TestEngineMultipleSources(t *testing.T) {
 	src1 := &fakeSource{name: "source1", events: 1, interval: 10 * time.Millisecond}
 	src2 := &fakeSource{name: "source2", events: 1, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), src1, src2)
+	eng := New(exec, 0, quietLogger(), nil, src1, src2)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -190,7 +191,7 @@ func TestEngineMultipleSources(t *testing.T) {
 
 func TestEngineNoSources(t *testing.T) {
 	exec := &fakeExecutor{}
-	eng := New(exec, 0, quietLogger())
+	eng := New(exec, 0, quietLogger(), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -209,7 +210,7 @@ func TestEngineNonZeroExitContinues(t *testing.T) {
 	exec := &fakeExecutor{exitCode: 1}
 	src := &fakeSource{name: "test", events: 0, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), src)
+	eng := New(exec, 0, quietLogger(), nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
@@ -219,5 +220,45 @@ func TestEngineNonZeroExitContinues(t *testing.T) {
 	// Engine should continue after non-zero exit, not stop
 	if calls := exec.calls.Load(); calls < 2 {
 		t.Errorf("executor calls = %d, want >= 2 (should continue after failure)", calls)
+	}
+}
+
+func TestEngineHealthRecording(t *testing.T) {
+	exec := &fakeExecutor{}
+	src := &fakeSource{name: "test-source", events: 2, interval: 10 * time.Millisecond}
+	h := health.NewStatus()
+
+	eng := New(exec, 0, quietLogger(), h, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	eng.Run(ctx)
+
+	// Health should have recorded syncs
+	calls := exec.calls.Load()
+	if calls < 1 {
+		t.Fatalf("executor calls = %d, want >= 1", calls)
+	}
+}
+
+func TestEngineOnReady(t *testing.T) {
+	exec := &fakeExecutor{}
+	src := &fakeSource{name: "test", events: 1, interval: 10 * time.Millisecond}
+
+	eng := New(exec, 0, quietLogger(), nil, src)
+
+	readyCalled := false
+	eng.OnReady = func() {
+		readyCalled = true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	eng.Run(ctx)
+
+	if !readyCalled {
+		t.Error("OnReady callback was not called")
 	}
 }

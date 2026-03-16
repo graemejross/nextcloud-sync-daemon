@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
 )
 
 // Engine is the central coordinator. It owns the event channel, starts event sources,
@@ -18,16 +19,20 @@ type Engine struct {
 	events   chan daemon.Event
 	cooldown time.Duration
 	logger   *slog.Logger
+	health   *health.Status
+	OnReady  func() // called after all sources are started, before main loop
 }
 
 // New creates an Engine with the given executor, cooldown period, and event sources.
-func New(executor daemon.SyncExecutor, cooldown time.Duration, logger *slog.Logger, sources ...daemon.EventSource) *Engine {
+// The health parameter is optional (may be nil).
+func New(executor daemon.SyncExecutor, cooldown time.Duration, logger *slog.Logger, health *health.Status, sources ...daemon.EventSource) *Engine {
 	return &Engine{
 		executor: executor,
 		sources:  sources,
 		events:   make(chan daemon.Event, 1), // capacity 1 for coalescing
 		cooldown: cooldown,
 		logger:   logger,
+		health:   health,
 	}
 }
 
@@ -44,11 +49,20 @@ func (e *Engine) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(s daemon.EventSource) {
 			defer wg.Done()
+			if e.health != nil {
+				e.health.SetSourceRunning(s.Name(), true)
+				defer e.health.SetSourceRunning(s.Name(), false)
+			}
 			e.logger.Info("starting event source", "source", s.Name())
 			if err := s.Start(ctx, e.events); err != nil {
 				e.logger.Error("event source error", "source", s.Name(), "error", err)
 			}
 		}(src)
+	}
+
+	// Signal readiness after all sources are started
+	if e.OnReady != nil {
+		e.OnReady()
 	}
 
 	e.logger.Info("engine started",
@@ -87,26 +101,35 @@ func (e *Engine) Run(ctx context.Context) error {
 
 			if err != nil {
 				failCount++
+				if e.health != nil {
+					e.health.RecordSync(&daemon.SyncResult{Error: err, Trigger: event.Source})
+				}
 				e.logger.Error("sync execution error",
 					"source", event.Source,
 					"error", err,
 					"fail_count", failCount,
 				)
-			} else if result.ExitCode != 0 {
-				failCount++
-				e.logger.Warn("sync completed with errors",
-					"source", event.Source,
-					"exit_code", result.ExitCode,
-					"duration_ms", result.Duration.Milliseconds(),
-					"fail_count", failCount,
-				)
 			} else {
-				syncCount++
-				e.logger.Info("sync complete",
-					"source", event.Source,
-					"duration_ms", result.Duration.Milliseconds(),
-					"sync_count", syncCount,
-				)
+				result.Trigger = event.Source
+				if e.health != nil {
+					e.health.RecordSync(result)
+				}
+				if result.ExitCode != 0 {
+					failCount++
+					e.logger.Warn("sync completed with errors",
+						"source", event.Source,
+						"exit_code", result.ExitCode,
+						"duration_ms", result.Duration.Milliseconds(),
+						"fail_count", failCount,
+					)
+				} else {
+					syncCount++
+					e.logger.Info("sync complete",
+						"source", event.Source,
+						"duration_ms", result.Duration.Milliseconds(),
+						"sync_count", syncCount,
+					)
+				}
 			}
 
 			lastSync = time.Now()

@@ -129,7 +129,7 @@ func run() int {
 		}()
 		go func() {
 			<-ctx.Done()
-			healthSrv.Shutdown(context.Background())
+			_ = healthSrv.Shutdown(context.Background())
 		}()
 	}
 
@@ -137,7 +137,7 @@ func run() int {
 
 	// Systemd readiness notification — called after all sources start
 	eng.OnReady = func() {
-		sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
+		_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
 		logger.Info("daemon ready")
 	}
 
@@ -151,7 +151,7 @@ func run() int {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					sdnotify.SdNotify(false, sdnotify.SdNotifyWatchdog)
+					_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyWatchdog)
 				}
 			}
 		}()
@@ -167,11 +167,11 @@ func run() int {
 
 	if err := eng.Run(ctx); err != nil {
 		logger.Error("engine error", "error", err)
-		sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
+		_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 		return 1
 	}
 
-	sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
+	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 	logger.Info("daemon stopped")
 	return 0
 }

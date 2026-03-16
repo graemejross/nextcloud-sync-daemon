@@ -201,7 +201,7 @@ func TestStatusTransitions(t *testing.T) {
 		rec := httptest.NewRecorder()
 		handler(rec, req)
 		var resp response
-		json.NewDecoder(rec.Body).Decode(&resp)
+		_ = json.NewDecoder(rec.Body).Decode(&resp)
 		return resp.Status
 	}
 

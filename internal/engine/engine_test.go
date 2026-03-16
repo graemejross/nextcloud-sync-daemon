@@ -89,7 +89,7 @@ func TestEngineSingleSync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	if calls := exec.calls.Load(); calls < 1 {
 		t.Errorf("executor calls = %d, want >= 1", calls)
@@ -106,7 +106,7 @@ func TestEngineCoalescing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	calls := exec.calls.Load()
 	// With 20 events at 5ms intervals and 50ms sync time, the capacity-1 channel
@@ -130,7 +130,7 @@ func TestEngineCooldown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	eng.Run(ctx)
+	_ = eng.Run(ctx)
 
 	calls := exec.calls.Load()
 	// In 500ms with 200ms cooldown: first sync at ~10ms, next allowed at ~210ms, next at ~410ms

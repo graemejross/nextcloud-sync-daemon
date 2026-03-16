@@ -58,3 +58,47 @@ Decision: no additional tests needed for Phase 1. cmd/ coverage will come natura
 ### Process observation
 
 The initial implementation didn't document anything on the GitHub issues — just a one-line close comment on #4. This was caught and corrected: detailed implementation comments were added to both #4 and #5 after the fact, and an "Issue Documentation Rule" was added to the topic's CLAUDE.md. Going forward, issues are updated as work progresses, not retroactively.
+
+---
+
+## Session 1 (continued) — 2026-03-16: Phase 2
+
+**Issue:** #6 (event loop engine with polling)
+**Commits:** `2476563`
+
+### What happened
+
+Implemented the event loop engine and poller — the two components needed for continuous daemon mode. After Phase 1, the binary could only run `--once`. Now it runs as a long-lived daemon, syncing on a configurable poll interval and shutting down cleanly on SIGTERM/SIGINT.
+
+### Implementation
+
+**Poller** was trivial — 50 lines. `time.NewTicker` in a select loop with non-blocking send to the trigger channel. The non-blocking send (`select` with `default`) is essential: without it, the poller would block when the engine is mid-sync.
+
+**Engine** was the interesting piece. The DESIGN.md spec translated cleanly into Go:
+- Capacity-1 event channel handles coalescing automatically — when the engine is busy syncing, multiple events collapse into at most one pending event
+- Cooldown is a simple `time.Since(lastSync) < cooldown` check, with a `lastSync.IsZero()` exception for the first event
+- Sources start in goroutines tracked by `sync.WaitGroup` for clean shutdown
+- Counters are local to the main loop (single goroutine) — no atomics needed there
+
+**CLI** changes were minimal — remove the "not yet implemented" guard, build sources from config, create engine, run it.
+
+### Key decisions
+
+**Cooldown applies after failures too.** If nextcloudcmd is broken, rapid retries won't help. Better to wait for the next natural trigger. This matches the prototype's behaviour.
+
+**Source errors don't stop the engine.** If one event source crashes (e.g., watcher), the others continue. The engine logs the error but keeps running. This is important for resilience — a crashed watcher shouldn't kill a working poller.
+
+**No problems encountered.** This phase went smoothly — the interfaces from Phase 1 fit exactly as designed. All tests passed on the first run. The TestHelperProcess pattern from Phase 1 wasn't needed here because the engine tests use fake executors (simple structs), not real subprocesses.
+
+### Test coverage
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 91.8% | 25 |
+| engine | 97.0% | 7 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 8 |
+
+### Process improvement
+
+This time, issue #6 was documented properly — a "starting work" comment at the beginning with the plan, and a detailed implementation comment at the end with everything that was built, decided, and learned. Following the Issue Documentation Rule established after Phase 1.

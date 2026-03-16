@@ -11,6 +11,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
 )
 
 var version = "dev"
@@ -84,11 +85,20 @@ func run() int {
 	// Daemon mode — build event sources and run engine
 	var sources []daemon.EventSource
 
+	if cfg.Watch.Enabled {
+		w, err := watcher.New(cfg.Sync.LocalDir, cfg.Watch.Debounce.Duration, cfg.Watch.Exclude, logger)
+		if err != nil {
+			logger.Error("failed to create watcher", "error", err)
+			return 1
+		}
+		sources = append(sources, w)
+	}
+
 	if cfg.Poll.Enabled {
 		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
 	}
 
-	// Future: watcher and webhook sources will be added here in Phases 3 and 4
+	// Future: webhook source will be added here in Phase 4
 
 	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, sources...)
 

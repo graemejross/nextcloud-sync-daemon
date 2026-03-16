@@ -256,7 +256,7 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 
 ## Status
 
-**Phase 3 complete.** Local file changes trigger immediate sync via fsnotify with timer-reset debounce and regex exclude patterns. The daemon runs continuously with filesystem watching, configurable polling, event coalescing, and cooldown enforcement. Test coverage: config 91.8%, engine 97.0%, poller 100%, sync 87.7%, watcher 78.3%. Phases 4-5 (webhook listener, production readiness) are next.
+**Phase 4 complete.** All three event sources implemented: filesystem watcher (fsnotify), webhook listener (HTTP server for Nextcloud push events), and polling fallback. The daemon is functionally equivalent to the prototype's four-component architecture, in a single binary. 68 tests across 6 packages. Phase 5 (health endpoint, systemd integration, CI, goreleaser) is next.
 
 ## Requirements
 

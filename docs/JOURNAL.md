@@ -159,3 +159,65 @@ The watcher's uncovered 21.7% is error-handling code (fsnotify internal errors, 
 ### Design observation
 
 The `daemon.EventSource` interface continues to prove its worth. The watcher is significantly more complex than the poller (150 lines vs 50), but it plugs into the engine identically. The engine doesn't know or care whether events come from fsnotify or a timer — it just reads from the channel and applies cooldown. This is exactly the decoupling the interfaces were designed for.
+
+---
+
+## Session 1 (continued) — 2026-03-16: Phase 4
+
+**Issue:** #8 (webhook listener)
+**Commits:** `73565b4`
+
+### What happened
+
+Implemented the third and final EventSource — an HTTP server that receives Nextcloud `webhook_listeners` push notifications. This completes the three-layer sync architecture from the prototype: filesystem watcher (local changes), webhook (server changes), and polling (fallback).
+
+### Implementation
+
+The webhook server is conceptually simpler than the watcher — it's a standard HTTP handler with a few Nextcloud-specific concerns:
+
+1. **Secret validation** with `crypto/subtle.ConstantTimeCompare` — prevents timing attacks that could leak the shared secret byte-by-byte.
+2. **Lenient payload parsing** — if the JSON is malformed, we still trigger a sync. A valid POST with the correct secret means something changed on the server. The prototype took the same approach.
+3. **Path filtering** using `strings.Contains` — matches the prototype's `if PATH_FILTER in path`. Simple but correct for the use case.
+4. **Body size limit** — `io.LimitReader` at 1MB prevents memory exhaustion from oversized payloads.
+
+The server lifecycle uses `net.Listen` + `srv.Serve` (not `ListenAndServe`) so we can bind the port before starting the shutdown goroutine. The shutdown goroutine watches `ctx.Done()` and calls `srv.Shutdown()` with a 5-second grace period.
+
+### Key decisions
+
+**Malformed JSON still triggers sync.** If someone sends a valid POST with the correct secret but garbage JSON, we sync. The alternative (reject and don't sync) risks missing legitimate changes if Nextcloud ever changes its payload format. Defensive: sync too much rather than too little.
+
+**Path filter returns 200 "filtered", not 4xx.** A filtered event is not an error — the server received and acknowledged the webhook correctly, it just decided the change isn't relevant. Returning an error code would cause Nextcloud to retry the webhook.
+
+**1MB body limit, not configurable.** Nextcloud webhook payloads are tiny (a few hundred bytes). 1MB is generous enough to never reject a legitimate payload, small enough to prevent abuse. No reason to make it configurable.
+
+### Testing approach
+
+Used `httptest.NewRequest` + `httptest.NewRecorder` for handler logic (13 unit tests), plus two integration tests with a real HTTP server on port 18767. The integration tests verify the full server lifecycle (start, serve, shutdown) and real HTTP round-trips.
+
+Table-driven `extractPath` tests cover 6 payload variants (valid, empty path, missing node, empty object, invalid JSON, empty body).
+
+### Test coverage
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 91.8% | 25 |
+| engine | 97.0% | 7 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 8 |
+| watcher | 78.3% | 9 |
+| webhook | 89.5% | 15 |
+
+**Total: 68 tests across 6 packages.** All three EventSource implementations complete.
+
+### Architecture complete
+
+With the webhook, all three event sources from the prototype are now implemented in Go:
+
+| Prototype | Go Daemon | Status |
+|-----------|-----------|--------|
+| `inotifywait` bash script + systemd service | `internal/watcher/` | ✓ |
+| Python HTTP server + systemd service | `internal/webhook/` | ✓ |
+| systemd timer + oneshot service | `internal/poller/` | ✓ |
+| bash sync script with lock file | `internal/sync/` + `internal/engine/` | ✓ |
+
+The daemon is now functionally equivalent to the prototype's four-component architecture, in a single binary. Phase 5 adds production polish (health endpoint, systemd sd_notify, CI, releases).

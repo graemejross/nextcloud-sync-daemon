@@ -256,7 +256,7 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 
 ## Status
 
-**Phase 2 complete.** The daemon runs continuously with configurable polling, event coalescing (capacity-1 channel), and cooldown enforcement. Config loading, sync executor, and one-shot CLI (`--once` mode) also implemented. Test coverage: config 91.8%, engine 97.0%, poller 100%, sync 87.7%. Phases 3-5 (filesystem watcher, webhook, production readiness) are next.
+**Phase 3 complete.** Local file changes trigger immediate sync via fsnotify with timer-reset debounce and regex exclude patterns. The daemon runs continuously with filesystem watching, configurable polling, event coalescing, and cooldown enforcement. Test coverage: config 91.8%, engine 97.0%, poller 100%, sync 87.7%, watcher 78.3%. Phases 4-5 (webhook listener, production readiness) are next.
 
 ## Requirements
 

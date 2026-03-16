@@ -102,3 +102,60 @@ Implemented the event loop engine and poller — the two components needed for c
 ### Process improvement
 
 This time, issue #6 was documented properly — a "starting work" comment at the beginning with the plan, and a detailed implementation comment at the end with everything that was built, decided, and learned. Following the Issue Documentation Rule established after Phase 1.
+
+---
+
+## Session 1 (continued) — 2026-03-16: Phase 3
+
+**Issue:** #7 (filesystem watcher)
+**Commits:** `a11d674`
+
+### What happened
+
+Implemented the filesystem watcher — the second EventSource, and the most complex one. This adds local file change detection: editing a file in the sync directory triggers an immediate sync (after debounce).
+
+### Implementation
+
+The watcher wraps `fsnotify` with three layers of logic:
+
+1. **Recursive directory watches.** fsnotify only watches individual directories, not trees. `addRecursive()` walks the directory tree at startup and adds a watch on every directory. When a `Create` event fires for a new directory, `addRecursive()` is called again to watch it. This handles the common case of creating a nested directory structure (e.g., `mkdir -p a/b/c`).
+
+2. **Compiled exclude patterns.** Exclude patterns from config are compiled into `[]*regexp.Regexp` at construction time. Every filesystem event is checked against these patterns using the relative path. This catches Nextcloud's internal `.sync_*.db` files that would otherwise trigger constant syncs.
+
+3. **Timer-reset debounce.** The most interesting piece. Uses a nil-channel trick:
+   - `debounceC` starts as nil — `select` on a nil channel blocks forever, so the debounce case is invisible
+   - First filesystem event creates a timer and points `debounceC` at its channel
+   - Subsequent events stop+drain+reset the timer
+   - When the timer fires, the event is sent and both variables reset to nil
+
+   This batches bulk operations (git checkout, drag-and-drop 50 files) into a single sync trigger.
+
+### Key decisions
+
+**Exclude patterns match relative paths, not absolute.** The pattern `\.sync_.*\.db` matches both `foo/.sync_abc.db` and `.sync_abc.db`. This is more intuitive for users writing config — they don't need to know the full absolute path.
+
+**Directory watch failures are warnings, not errors.** If one directory in a tree can't be watched (permissions, inotify limits), the rest of the tree still works. Partial coverage is better than crashing.
+
+**Timer drain is necessary.** When calling `timer.Stop()`, if it returns false, the timer has already fired and the value is sitting in the channel. Without draining it, the next `select` iteration would immediately see it and fire a premature debounce. The `select` with `default` handles the race where another goroutine already consumed it.
+
+### Problems encountered
+
+1. **Missing `fmt` import** — test file used `fmt.Sprintf` for filename generation but the import was missing. Had a `var _ = fmt.Sprintf` at the bottom that was supposed to force the import but didn't work without the actual import statement. Minor.
+
+2. **go.mod cache not synced** — `go get` ran but `go mod tidy` was needed to update go.sum. The `go get` had succeeded earlier but the module graph wasn't resolved until tidy ran.
+
+### Test coverage
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 91.8% | 25 |
+| engine | 97.0% | 7 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 8 |
+| watcher | 78.3% | 9 |
+
+The watcher's uncovered 21.7% is error-handling code (fsnotify internal errors, filepath.Rel failures, directory walk errors) that can't be triggered with real filesystems in unit tests. All user-facing logic paths are covered.
+
+### Design observation
+
+The `daemon.EventSource` interface continues to prove its worth. The watcher is significantly more complex than the poller (150 lines vs 50), but it plugs into the engine identically. The engine doesn't know or care whether events come from fsnotify or a timer — it just reads from the channel and applies cooldown. This is exactly the decoupling the interfaces were designed for.

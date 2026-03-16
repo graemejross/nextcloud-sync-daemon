@@ -1,0 +1,6 @@
+[Unit]
+Description=Nextcloud CLI sync (fallback)
+
+[Service]
+Type=oneshot
+ExecStart=%h/nextcloud-server/scripts/nextcloud-sync.sh

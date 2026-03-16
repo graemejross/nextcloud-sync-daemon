@@ -1,0 +1,12 @@
+[Unit]
+Description=Nextcloud local file watcher (inotifywait)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/nextcloud-server/scripts/nextcloud-watch.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

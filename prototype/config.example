@@ -1,0 +1,33 @@
+#!/bin/bash
+# Nextcloud sync daemon — prototype configuration
+#
+# Copy this file to config.sh and edit for your environment:
+#   cp config.example config.sh
+#   chmod 600 config.sh
+#   nano config.sh
+#
+# All prototype scripts source this file for paths and settings.
+# config.sh is gitignored — your local values stay out of version control.
+
+# --- User and paths ---
+SYNC_USER="user"
+SYNC_HOME="/home/${SYNC_USER}"
+SYNC_LOCAL_DIR="${SYNC_HOME}/nextcloud"
+SYNC_SCRIPTS_DIR="${SYNC_HOME}/nextcloud-server/scripts"
+SYNC_LOG_DIR="${SYNC_HOME}/nextcloud-server"
+SYNC_CREDENTIALS="${SYNC_HOME}/.credentials"
+
+# --- Nextcloud server ---
+SYNC_REMOTE_PATH="/username"      # Remote path on Nextcloud server (e.g., /username)
+
+# --- Filesystem watcher (Layer 1) ---
+WATCH_DEBOUNCE=10                  # Seconds to batch rapid events
+WATCH_COOLDOWN=30                  # Minimum seconds between syncs
+
+# --- Webhook listener (Layer 2) ---
+WEBHOOK_PORT=8767
+WEBHOOK_SECRET="change-me"        # Must match Nextcloud webhook_listeners config
+WEBHOOK_PATH_FILTER="/username/"   # Only sync changes under this path
+
+# --- Polling fallback (Layer 3) ---
+POLL_INTERVAL=15                   # Seconds between polling syncs (systemd timer)

@@ -256,7 +256,7 @@ The rewrite to Go is an intentional challenge: take a working but fragile multi-
 
 ## Status
 
-**Pre-development.** The bash/Python prototype is running in production. The Go rewrite has not yet started.
+**Phase 1 complete.** Config loading, sync executor, and one-shot CLI (`--once` mode) are implemented with >87% test coverage. The bash/Python prototype continues to run in production. Phases 2-5 (event loop, watcher, webhook, production readiness) are next.
 
 ## Requirements
 

@@ -1,0 +1,84 @@
+# nextcloud-sync-daemon configuration
+#
+# All durations accept Go duration strings ("5m", "30s", "1h30m")
+# or integer seconds (120 = 2 minutes).
+
+server:
+  # Nextcloud server URL (required)
+  url: https://cloud.example.com
+
+  # Nextcloud username (required)
+  username: sync-user
+
+  # Password — use one of these (not both):
+  # Inline password:
+  # password: your-app-password
+  # Password file (read at each sync, supports rotation):
+  password_file: /etc/nextcloud-sync-daemon/password
+
+sync:
+  # Local directory to sync (required)
+  local_dir: /home/user/nextcloud
+
+  # Remote path on Nextcloud server (default: /)
+  remote_path: /
+
+  # Path to nextcloudcmd binary (default: nextcloudcmd, found via PATH)
+  # nextcloudcmd: /usr/bin/nextcloudcmd
+
+  # Extra arguments passed to nextcloudcmd before the standard args
+  # extra_args: ["--silent"]
+
+  # Maximum time for a single sync run (default: 5m)
+  timeout: 5m
+
+watch:
+  # Enable filesystem watching for local changes (default: false)
+  enabled: true
+
+  # Batch rapid filesystem events into a single sync trigger (default: 10s)
+  debounce: 10s
+
+  # Minimum interval between syncs triggered by the watcher (default: 30s)
+  # Must be >= debounce
+  cooldown: 30s
+
+  # File patterns to ignore (regex, matched against relative path)
+  exclude:
+    - '\.sync_.*\.db'
+
+webhook:
+  # Enable webhook listener for server push events (default: false)
+  enabled: false
+
+  # Address to listen on (default: 0.0.0.0:8767)
+  listen: 0.0.0.0:8767
+
+  # Shared secret for webhook validation (required if webhook enabled)
+  # Must match the secret configured in Nextcloud's webhook_listeners app
+  # secret: your-webhook-secret
+
+  # Only trigger sync for changes under this path prefix (default: /)
+  path_filter: /
+
+poll:
+  # Enable polling fallback (default: false)
+  enabled: true
+
+  # Polling interval (default: 60s)
+  interval: 60s
+
+logging:
+  # Log level: debug, info, warn, error (default: info)
+  level: info
+
+  # Log format: text (human-readable) or json (machine-parseable) (default: text)
+  # Logs are written to stderr for systemd journal integration
+  format: text
+
+health:
+  # Enable health check endpoint (default: false)
+  enabled: false
+
+  # Address for health endpoint (default: 127.0.0.1:8768, localhost only)
+  listen: 127.0.0.1:8768

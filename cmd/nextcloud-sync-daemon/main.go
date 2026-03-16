@@ -12,6 +12,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/webhook"
 )
 
 var version = "dev"
@@ -94,11 +95,18 @@ func run() int {
 		sources = append(sources, w)
 	}
 
+	if cfg.Webhook.Enabled {
+		sources = append(sources, webhook.New(
+			cfg.Webhook.Listen,
+			cfg.Webhook.Secret,
+			cfg.Webhook.PathFilter,
+			logger,
+		))
+	}
+
 	if cfg.Poll.Enabled {
 		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
 	}
-
-	// Future: webhook source will be added here in Phase 4
 
 	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, sources...)
 

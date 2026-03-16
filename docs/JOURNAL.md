@@ -355,3 +355,106 @@ Added `TestWebhookRateLimiting` — tests same-IP blocking, different-IP passes,
 | webhook | +1 | 16 |
 | config | +4 | 29 |
 | **Total** | **+5** | **85** |
+
+---
+
+## Session 3 — 2026-03-16: Team Review & Migration
+
+**Issues:** #14 (README restructure, closed), #15 (team review fixes, closed), #16 (clarence/silver-pi migration, closed)
+**Commits:** `562c5ed`, `64ccc66`, `f411052`
+
+### What happened
+
+Three phases of work in this session: restructuring the README for an end-user audience, a multi-agent critical review of the entire repo before community announcement, and migrating clarence and silver-pi from the prototype to the Go daemon.
+
+### README restructure (#14)
+
+The README was rewritten from a development-focused design document to a user-facing tool README. New structure: Features, Requirements, Installation (download + build from source), Configuration (minimal config, password file, validate/test), Usage (CLI flags table), Running as systemd service (system-wide + user service), Webhook setup (4-step guide with curl commands), Security Considerations.
+
+The development history (the problem, the prototype architecture diagram, prototype vs Go daemon comparison table, lessons learned) was preserved below a horizontal rule. This respects the project's commitment to transparent AI-assisted development documentation while putting user-relevant content first.
+
+### Team critical review (#15)
+
+Dispatched a 4-agent team (Oliver/Opus, Sophie/Sonnet, Cedric/Codex, Grace/Gemini) for a pre-announcement critical review. Three agents returned actionable findings; Grace (Gemini) couldn't access the repo.
+
+**7 issues found and fixed:**
+
+1. **Missing LICENSE file** (Critical) — README claimed MIT but no LICENSE file existed. GitHub showed "No license". Added MIT LICENSE file.
+
+2. **Unbounded rate-limit map** (Medium) — `webhook.go` rateMap grew forever with no eviction. Added periodic cleanup every 10 minutes, purging entries older than the rate interval.
+
+3. **Leaked cancel function** (Medium) — `context.go` discarded the cancel function from `signal.NotifyContext`. Fixed to return it so callers can defer it.
+
+4. **`--once` fails without event sources** (Medium) — `config.Validate()` required at least one event source, but `--once` mode doesn't need sources. Split into `Validate()` (core checks) and `ValidateEventSources()` (called only in daemon mode).
+
+5. **Health server shutdown no timeout** (Low) — Used `context.Background()` which could block forever. Added 5-second timeout matching the webhook server pattern.
+
+6. **systemd `WantedBy=default.target`** (Low) — For headless servers, `multi-user.target` is conventional. Changed.
+
+7. **CI actions on mutable tags** (Low) — Pinned `actions/checkout`, `actions/setup-go`, `golangci-lint-action`, and `goreleaser-action` to SHA.
+
+**Findings dismissed after verification:**
+- "Password visible in ps" — already documented in Security Considerations
+- "Double-counting failures" — engine and health have independent counters by design
+- "OnReady fires before sources ready" — acceptable; watchdog catches stalls
+- "Webhook default 0.0.0.0" — intentional; webhooks need external access
+- ".gitignore too narrow" — adequate for a Go project
+- "POST-COMPACT-CONTEXT in repo" — already gitignored
+
+### Migration to clarence and silver-pi (#16)
+
+Migrated both hosts from the bash/Python prototype to the Go daemon. These are the most active sync clients — the best real-world stress test before community announcement.
+
+**Clarence (amd64):**
+- Stopped and disabled `nextcloud-watch` and `nextcloud-webhook` prototype units
+- Deployed v0.1.2-pre binary
+- Config: watcher + webhook + poller, 5-minute poll interval, health on port 8769 (8768 occupied by Nextcloud MCP server)
+- Existing webhook registrations (IDs 25-36) reused — same IP, port, secret
+
+**Silver-pi (arm64):**
+- Stopped and disabled `nextcloud-watch`, `nextcloud-webhook`, and `nextcloud-sync.timer` prototype units
+- Cross-compiled arm64 binary from clarence
+- Same config as clarence, health on port 8768
+- Existing webhook registrations (IDs 37-40) reused
+- Simplified systemd unit — `ProtectProc=invisible` and `ProtectSystem=strict` cause status=226/NAMESPACE on the Pi's kernel
+
+**End-to-end verification:** File created on clarence → watcher triggered sync to Nextcloud → Nextcloud fired webhook to silver-pi → silver-pi synced. Full chain in ~30 seconds.
+
+### Problems encountered
+
+1. **Health port conflict on clarence.** Port 8768 was already used by the Nextcloud MCP server (python3). Changed to 8769.
+
+2. **Password file owned by root.** The daemon runs as user `graeme` but `sudo tee` created the file owned by root. Fixed with `sudo chown graeme:graeme`.
+
+3. **ProtectProc/ProtectSystem on Raspberry Pi.** Silver-pi's kernel doesn't support these systemd namespace directives. The service failed with exit code 226/NAMESPACE. Fixed by using a minimal unit file without security hardening directives.
+
+### Deployment state
+
+| Host | Arch | Version | Sources | Health | Webhook IDs |
+|------|------|---------|---------|--------|-------------|
+| clarence | amd64 | 0.1.2-pre | watcher + webhook + poller | :8769 | 25-36 |
+| silver-pi | arm64 | 0.1.2-pre | watcher + webhook + poller | :8768 | 37-40 |
+| gold-pi | arm64 | 0.1.1 | watcher + webhook + poller | :8768 | 41-44, 49-52 |
+| chorus | amd64 | 0.1.1 | watcher + webhook + poller | :8768 | 45-48, 53-56 |
+
+Prototype units left disabled (not removed) on clarence and silver-pi as rollback option.
+
+### Test coverage (post-review fixes)
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 92.6% | 34 |
+| engine | 95.3% | 9 |
+| health | 100.0% | 10 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 9 |
+| watcher | 78.3% | 9 |
+| webhook | 88.5% | 16 |
+| **Total** | | **91** |
+
+### Lessons
+
+- **Multi-agent reviews catch real issues.** The LICENSE file omission would have been embarrassing — it's the first thing open-source contributors check. The `--once` validation bug would have frustrated the first user who tried a minimal cron config.
+- **Cross-check agent findings.** Several findings sounded plausible but were wrong or already handled. Without verification, we'd have "fixed" things that didn't need fixing.
+- **systemd security directives are kernel-dependent.** `ProtectProc=invisible` requires kernel 5.8+ with `hidepid=invisible` support. The Raspberry Pi's kernel (6.1) should support it, but the user-service context may not. Always test on the actual target.
+- **Port conflicts are deployment-specific.** The health endpoint port should be documented as "pick a free port" rather than having a fixed default. For now, the default 8768 works on 3 of 4 hosts.

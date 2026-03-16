@@ -221,3 +221,31 @@ With the webhook, all three event sources from the prototype are now implemented
 | bash sync script with lock file | `internal/sync/` + `internal/engine/` | ✓ |
 
 The daemon is now functionally equivalent to the prototype's four-component architecture, in a single binary. Phase 5 adds production polish (health endpoint, systemd sd_notify, CI, releases).
+
+---
+
+## Session 1 wrap-up — 2026-03-16: Phase 5 Planning
+
+**Issue:** #9 (production readiness)
+
+### What remains
+
+Phase 5 is the final phase — four components, mostly config files rather than application code:
+
+1. **Health endpoint** (`internal/health/`) — the only component with significant code. `Status` struct with `sync.RWMutex`, tracks uptime, last sync result, sync/fail counts, source status. JSON response on GET. Engine needs updating to call `RecordSync()` and `SetSourceRunning()`.
+
+2. **Systemd integration** — `go-systemd` for `sd_notify(READY=1)` after sources start, watchdog heartbeat every 60s, `STOPPING` on shutdown. Example unit file with hardening directives.
+
+3. **GitHub Actions CI** — build + test matrix (amd64/arm64), golangci-lint. Standard Go CI workflow.
+
+4. **goreleaser** — `.goreleaser.yml` for linux/amd64 + linux/arm64 binaries. Release workflow triggered by tag push. Tag v0.1.0 when ready.
+
+### Session statistics
+
+- **Phases completed:** 1, 2, 3, 4 (out of 5)
+- **Packages:** 6 (daemon, config, sync, engine, poller, watcher, webhook)
+- **Tests:** 68
+- **Lines of Go:** ~2,900
+- **Commits:** 14 (10 in daemon repo, 4 in docs repo)
+- **Issues closed:** 7 (#1-8 except #3 and #9)
+- **Token usage:** ~718k tokens, ~$34.60

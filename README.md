@@ -136,11 +136,13 @@ loginctl enable-linger $USER   # start at boot without login
 
 ### Monitoring
 
+The daemon logs to stderr (no log files). When running under systemd, logs go to the journal:
+
 ```bash
 # Check status
 systemctl --user status nextcloud-sync-daemon
 
-# View logs
+# Follow logs
 journalctl --user -u nextcloud-sync-daemon -f
 
 # Health endpoint (if enabled)

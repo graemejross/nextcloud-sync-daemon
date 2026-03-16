@@ -21,16 +21,12 @@ Event-driven sync daemon for headless Nextcloud servers. Wraps `nextcloudcmd` wi
 
 ### Download
 
-Pre-built binaries for `linux/amd64` and `linux/arm64` are available from [GitHub Releases](https://github.com/graemejross/nextcloud-sync-daemon/releases):
+Pre-built binaries for `linux/amd64` and `linux/arm64` are available from [GitHub Releases](https://github.com/graemejross/nextcloud-sync-daemon/releases).
+
+Download the appropriate `.tar.gz` for your architecture, then extract:
 
 ```bash
-# amd64
-curl -LO https://github.com/graemejross/nextcloud-sync-daemon/releases/latest/download/nextcloud-sync-daemon_linux_amd64.tar.gz
-tar xzf nextcloud-sync-daemon_linux_amd64.tar.gz
-
-# arm64 (Raspberry Pi)
-curl -LO https://github.com/graemejross/nextcloud-sync-daemon/releases/latest/download/nextcloud-sync-daemon_linux_arm64.tar.gz
-tar xzf nextcloud-sync-daemon_linux_arm64.tar.gz
+tar xzf nextcloud-sync-daemon_*.tar.gz
 ```
 
 ### Build from source

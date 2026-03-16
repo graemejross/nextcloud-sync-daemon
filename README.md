@@ -236,46 +236,25 @@ For headless Linux servers (VMs, Raspberry Pis, NAS devices), this means sync la
 
 This project grew out of a production Nextcloud deployment syncing files across two headless Debian servers — a primary VM (Proxmox) and a contingency Raspberry Pi 5. The prototype was a three-layer architecture:
 
-```
-                    ┌──────────────────────────────────────────┐
-                    │           Nextcloud Server               │
-                    │                                          │
-                    │  ┌──────────────────────────────────┐    │
-                    │  │    webhook_listeners app          │    │
-                    │  │                                   │    │
-                    │  │  Events:                          │    │
-                    │  │   - NodeCreatedEvent              │    │
-                    │  │   - NodeWrittenEvent              │    │
-                    │  │   - NodeDeletedEvent              │    │
-                    │  │   - NodeRenamedEvent              │    │
-                    │  └──────────┬───────────────────────┘    │
-                    │             │ POST with shared secret    │
-                    └─────────────┼────────────────────────────┘
-                                  │
-          ┌───────────────────────┼───────────────────────────┐
-          │  Headless Server      │                            │
-          │                       ▼                            │
-          │  ┌─────────────────────────────────────────────┐   │
-          │  │  Layer 2: Webhook Listener (port 8767)      │   │
-          │  │  Receives server push events                 │   │
-          │  │  Filters by path, triggers sync              │   │
-          │  └──────────────────┬──────────────────────────┘   │
-          │                     │                              │
-          │                     ▼                              │
-          │  ┌─────────────────────────────────────────────┐   │
-          │  │            nextcloudcmd --silent             │   │
-          │  │         (bidirectional file sync)            │   │
-          │  └─────────────────────────────────────────────┘   │
-          │                     ▲            ▲                 │
-          │                     │            │                 │
-          │  ┌──────────────────┴──┐  ┌──────┴──────────────┐  │
-          │  │ Layer 1: inotifywait│  │ Layer 3: systemd    │  │
-          │  │ Watches local files │  │ timer (polling      │  │
-          │  │ Debounce + cooldown │  │ fallback)           │  │
-          │  └─────────────────────┘  └─────────────────────┘  │
-          │                                                    │
-          │  ~/nextcloud/  ◄── local sync directory            │
-          └────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph NC["Nextcloud Server"]
+        WH["webhook_listeners app<br/>NodeCreated · NodeWritten<br/>NodeDeleted · NodeRenamed"]
+    end
+
+    subgraph HS["Headless Server"]
+        L2["Layer 2: Webhook Listener<br/>port 8767 · filters by path"]
+        CMD["nextcloudcmd --silent<br/>bidirectional file sync"]
+        L1["Layer 1: inotifywait<br/>watches local files<br/>debounce + cooldown"]
+        L3["Layer 3: systemd timer<br/>polling fallback"]
+        DIR[("~/nextcloud/<br/>local sync directory")]
+    end
+
+    WH -- "POST with shared secret" --> L2
+    L2 --> CMD
+    L1 --> CMD
+    L3 --> CMD
+    CMD -.-> DIR
 ```
 
 The prototype used bash + inotifywait for filesystem watching, a Python HTTP server for webhooks, and a systemd timer for polling — three separate scripts, four systemd units, plus logrotate. It worked but was fragile: sync storm loops, 3.5 GB/day log volume, PID lock file races, and credentials in shell environment variables.

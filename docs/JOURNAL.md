@@ -458,3 +458,99 @@ Prototype units left disabled (not removed) on clarence and silver-pi as rollbac
 - **Cross-check agent findings.** Several findings sounded plausible but were wrong or already handled. Without verification, we'd have "fixed" things that didn't need fixing.
 - **systemd security directives are kernel-dependent.** `ProtectProc=invisible` requires kernel 5.8+ with `hidepid=invisible` support. The Raspberry Pi's kernel (6.1) should support it, but the user-service context may not. Always test on the actual target.
 - **Port conflicts are deployment-specific.** The health endpoint port should be documented as "pick a free port" rather than having a fixed default. For now, the default 8768 works on 3 of 4 hosts.
+
+---
+
+## Session 4 — 2026-03-17: Peer Notification, Health Enhancements & Sync Test
+
+**Issues:** #19 (health enhancements), #17 (peer notification), #18 (sync test command)
+**Commit:** `21b8bb1`
+
+### What happened
+
+Implemented three features driven by the cross-host sync latency investigation from the previous session. The investigation found that after a local file change, the second host took ~30 seconds to sync — 10 seconds wasted in the Nextcloud server's job queue before it fired the webhook. Peer-to-peer notification eliminates that delay by having the first host POST directly to the second host's webhook endpoint after a successful watcher-triggered sync.
+
+Implementation order: #19 → #17 → #18. Issue #19 added `RecordWebhookReceived()` to the health system, which #17's peer concept builds on conceptually (peer notifications arrive via the same webhook endpoint). Issue #18 was independent but benefits from both.
+
+### Issue #19 — Health endpoint enhancements
+
+Added two capabilities to the health endpoint:
+
+1. **Per-trigger sync counts** (`trigger_counts` in JSON). A `map[string]int64` tracking how many syncs each source triggered — e.g., `{"watcher": 12, "webhook": 3, "poller": 5}`. Incremented in `RecordSync()` when `result.Trigger` is non-empty.
+
+2. **Last webhook received timestamp** (`last_webhook_received`). `RecordWebhookReceived()` called by the webhook server after successful secret validation (before rate limiting and path filtering). This tells operators "yes, webhooks are arriving" even if they're being filtered or rate-limited.
+
+Also moved `healthStatus := health.NewStatus()` out of the `if cfg.Health.Enabled` block — it's always created now. The HTTP server only starts when enabled, but internal tracking runs regardless. This eliminates nil checks throughout the codebase.
+
+### Issue #17 — Peer notification
+
+New `internal/peer/` package. A `Notifier` struct POSTs `{"source":"peer","time":"<RFC3339>"}` to each configured peer's webhook endpoint with the shared `X-Webhook-Secret` header. 5-second HTTP timeout. Concurrent goroutine per peer with `sync.WaitGroup`. Errors logged at Warn, never returned.
+
+**Echo loop prevention** is the critical design constraint. The engine only notifies peers after successful *watcher-triggered* syncs:
+
+```go
+if e.notifier != nil && event.Source == "watcher" {
+    go e.notifier.NotifyPeers(ctx)
+}
+```
+
+Not on webhook source (would echo between peers), not on poller (nothing directional happened), not on failure (nothing to tell peers about).
+
+Config:
+```yaml
+peers:
+  - url: "http://silver-pi:8767/webhook"
+    secret: "shared-secret"
+```
+
+Validation: each peer needs a parseable URL and non-empty secret. Empty list is valid.
+
+### Issue #18 — Sync test command
+
+New `--test` flag: writes `.nsd-sync-test-<timestamp>` marker file, runs a full sync, reports exit code and duration, removes the marker, runs a second sync to propagate the deletion. Uses the same executor as normal daemon syncs — if the test passes, real syncs will work.
+
+### Deployment
+
+Built v0.2.0-pre binaries (amd64 + arm64), deployed to all 4 hosts. Peer mesh configured:
+
+| Host | Peers |
+|------|-------|
+| clarence | silver-pi:8767, chorus:8767 |
+| silver-pi | clarence:8767, chorus:8767 |
+| chorus | clarence:8767, silver-pi:8767 |
+| gold-pi | (none — different Nextcloud user/path) |
+
+Using Tailscale MagicDNS hostnames. Reusing existing webhook secrets for peer auth.
+
+### Key decisions
+
+- **Watcher-only notification** — the simplest rule that prevents echo loops. All other approaches (tracking notification origin, deduplication tokens) add complexity without benefit.
+- **5-second peer timeout** — peers are on the same Tailscale network. If they don't respond in 5 seconds, they're down. The WaitGroup still returns promptly.
+- **No retry** — if a peer is down, it'll catch up on its next poll. Retrying complicates the code and delays the sync loop for no benefit.
+- **Always create healthStatus** — eliminates nil checks in webhook and engine wiring. The HTTP server is the expensive part; the Status struct is cheap.
+
+### Problems encountered
+
+1. **"Text file busy"** — `sudo cp` failed when overwriting the running binary. Fixed by stopping the service first.
+2. **Pre-existing TestFindConfigPath failure** — real config at `/etc/nextcloud-sync-daemon/config.yaml` on deployment hosts causes the test to find system config instead of test config. Not related to these changes.
+
+### Test coverage
+
+| Package | Coverage | Tests |
+|---------|----------|-------|
+| config | 88.7% | 39 |
+| engine | 95.6% | 13 |
+| health | 100.0% | 14 |
+| peer | 85.7% | 6 |
+| poller | 100.0% | 4 |
+| sync | 87.7% | 9 |
+| watcher | 78.3% | 9 |
+| webhook | 88.8% | 18 |
+| **Total** | | **~112** |
+
+Up from 91 tests (Session 3) to ~112, across 8 packages. New `peer` package added.
+
+### Lessons
+
+- **Peer notification is the biggest latency win.** Nextcloud's internal job queue adds ~10 seconds before firing webhooks. Direct peer POST eliminates this entirely — the second host starts syncing within 1-2 seconds of the first host's sync completing.
+- **Echo loop prevention needs to be designed in, not bolted on.** The `event.Source == "watcher"` guard is simple and correct because the source field was already part of the Event type from Phase 2. If we hadn't had source attribution, preventing loops would have required tracking notification IDs or timestamps — much more complex.

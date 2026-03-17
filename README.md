@@ -285,7 +285,7 @@ The prototype used bash + inotifywait for filesystem watching, a Python HTTP ser
 
 ## Status
 
-**v0.1.1.** All five phases complete. 85 tests across 7 packages.
+**v0.2.0.** Health endpoint enhancements (#19), peer-to-peer notification (#17), sync test command (#18). ~112 tests across 8 packages.
 
 ## License
 

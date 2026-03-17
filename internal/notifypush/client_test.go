@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/config"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"

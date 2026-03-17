@@ -138,7 +138,7 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 			}
 			if last, ok := s.rateMap[ip]; ok && now.Sub(last) < s.rateMin {
 				s.rateMu.Unlock()
-				s.logger.Warn("webhook rate-limited",
+				s.logger.Debug("webhook rate-limited",
 					"remote", r.RemoteAddr,
 					"min_interval", s.rateMin,
 				)
@@ -180,7 +180,7 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 		}
 		select {
 		case trigger <- event:
-			s.logger.Info("webhook event received", "path", path)
+			s.logger.Debug("webhook event received", "path", path)
 		default:
 			s.logger.Debug("webhook event dropped (sync already pending)", "path", path)
 		}

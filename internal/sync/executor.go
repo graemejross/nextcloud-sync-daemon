@@ -100,10 +100,6 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 	}
 
 	result.ExitCode = 0
-	e.logger.Info("sync complete",
-		"exit_code", 0,
-		"duration_ms", result.Duration.Milliseconds(),
-	)
 
 	return result, nil
 }

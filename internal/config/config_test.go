@@ -348,6 +348,9 @@ func TestFindConfigPath(t *testing.T) {
 	})
 
 	t.Run("user config dir", func(t *testing.T) {
+		if _, err := os.Stat("/etc/nextcloud-sync-daemon/config.yaml"); err == nil {
+			t.Skip("system config exists, would match before user config dir")
+		}
 		dir := t.TempDir()
 		t.Setenv("HOME", dir)
 		t.Setenv("NEXTCLOUD_SYNC_CONFIG", "")
@@ -371,6 +374,9 @@ func TestFindConfigPath(t *testing.T) {
 	})
 
 	t.Run("no config found", func(t *testing.T) {
+		if _, err := os.Stat("/etc/nextcloud-sync-daemon/config.yaml"); err == nil {
+			t.Skip("system config exists, would always be found")
+		}
 		dir := t.TempDir()
 		t.Setenv("HOME", dir)
 		t.Setenv("NEXTCLOUD_SYNC_CONFIG", "")

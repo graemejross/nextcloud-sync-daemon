@@ -554,3 +554,86 @@ Up from 91 tests (Session 3) to ~112, across 8 packages. New `peer` package adde
 
 - **Peer notification is the biggest latency win.** Nextcloud's internal job queue adds ~10 seconds before firing webhooks. Direct peer POST eliminates this entirely — the second host starts syncing within 1-2 seconds of the first host's sync completing.
 - **Echo loop prevention needs to be designed in, not bolted on.** The `event.Source == "watcher"` guard is simple and correct because the source field was already part of the Event type from Phase 2. If we hadn't had source attribution, preventing loops would have required tracking notification IDs or timestamps — much more complex.
+
+---
+
+## Session 5 — 2026-03-17: notify_push WebSocket Event Source
+
+**Issues:** #24 (implementation), #26 (server setup/integration test)
+**Commits:** `def50fc`
+
+### What happened
+
+Community feature request from @ThaDaVos (#23): the webhook listener requires the daemon host to be reachable from the Nextcloud server — doesn't work behind NAT/firewalls. Nextcloud's [notify_push](https://github.com/nextcloud/notify_push) app reverses the connection: the client connects *outbound* via WebSocket, so no inbound ports needed.
+
+Implemented notify_push as the 4th event source, installed the app on the Nextcloud server, integration tested end-to-end, and deployed to all three hosts.
+
+### Implementation
+
+New `internal/notifypush/` package — `Client` struct implementing `daemon.EventSource`:
+
+- **Auto-discovery** — queries `GET /ocs/v2.php/cloud/capabilities?format=json` with Basic Auth, parses nested JSON to find the WebSocket endpoint URL. Re-discovers on each reconnect if URL not configured.
+- **Authentication** — sends username (text message), then password (text message), awaits `"authenticated"` response. Uses `cfg.ResolvePassword()` for credential rotation support.
+- **Message handling** — `notify_file` and `notify_file_id *` → emit Event; `notify_activity`/`notify_notification` → ignored.
+- **Keep-alive** — 30-second WebSocket ping loop.
+- **Reconnect** — exponential backoff (5s → 5m, capped). Resets to initial interval after successful authentication (transient disconnect vs connection failure).
+- **Dependency** — `nhooyr.io/websocket` v1.8.17 (pure Go, context-aware, no CGo).
+
+### Server-side setup
+
+Installing notify_push on the Nextcloud Docker stack required:
+
+1. `occ app:install notify_push` — installed v1.3.1
+2. New `notify-push` container in docker-compose.yml — uses the binary from the installed app, reads config.php, connected to frontend + backend Docker networks
+3. Caddy `handle_path /push/*` route proxying to `notify-push:7867`
+4. **Trusted proxies fix** — Docker container hostnames ("caddy", "notify-push") don't work for Nextcloud's trusted_proxies check. Had to use CIDR ranges (`172.18.0.0/16 172.19.0.0/16`). The `TRUSTED_PROXIES` env var in docker-compose.yml overrides any `occ config:system:set` changes via `reverse-proxy.config.php`.
+
+### Integration test results
+
+```
+14:31:06  Auto-discovered WebSocket endpoint from capabilities API
+14:31:06  Connected and authenticated via WSS
+14:31:11  Uploaded test file via WebDAV
+14:31:11  notify_file received (~800ms after upload)
+14:31:11  Sync triggered (source: notify_push)
+14:31:13  Sync complete (1650ms total)
+```
+
+### Deployment
+
+Built new binaries (amd64 + arm64), deployed to all three hosts, added `notify_push: enabled: true` to each config, restarted services.
+
+| Host | Arch | Sources | notify_push |
+|------|------|---------|-------------|
+| clarence | amd64 | watcher + webhook + poller + notify_push | connected |
+| silver-pi | arm64 | watcher + webhook + poller + notify_push | connected |
+| chorus | amd64 | watcher + webhook + poller + notify_push | connected |
+
+All three auto-discovered the WebSocket endpoint and authenticated. notify_push events visible in production logs within minutes.
+
+### Key decisions
+
+- **No peer notification for notify_push events.** The engine only notifies peers for `Source == "watcher"`. This is correct: push events come from the server, so all connected clients get their own notifications independently.
+- **`connectAndListen` returns `(authenticated bool, err error)`** — allows the reconnect loop to distinguish connection failures (increase backoff) from post-auth disconnects (reset backoff to initial).
+- **notify_push + webhook can coexist.** Both enabled, cooldown deduplicates. Users can run both for redundancy, or just notify_push if they can't open inbound ports.
+
+### Problems encountered
+
+1. **Leaked Tailscale hostname in public GitHub issue.** Created issue #25 with the Nextcloud server's MagicDNS hostname. Caught by user, deleted issue, recreated as #26 without private details. Added feedback memory to prevent recurrence.
+2. **Docker trusted_proxies resolution.** Nextcloud can't resolve Docker container hostnames for proxy trust. Spent several attempts with hostnames and occ config before discovering that `TRUSTED_PROXIES` env var (processed by `reverse-proxy.config.php`) overrides all occ changes, and must use IP/CIDR not hostnames.
+3. **Duplicate config key.** Test config had two `logging:` sections — YAML unmarshal error caught immediately.
+
+### Test coverage
+
+| Package | Tests |
+|---------|-------|
+| notifypush | 16 (12 top-level + 4 subtests) |
+| **Total** | **99 tests across 9 packages** |
+
+New tests use `httptest.Server` + `websocket.Accept` for fake WebSocket servers. No sleep-based timing — channel reads with timeouts.
+
+### Lessons
+
+- **Never put infrastructure details in public repos.** Tailscale hostnames, IPs, tailnet names — none of it belongs in public issues, PRs, or commits. GitHub edit history preserves deleted content, so the only fix is deleting the entire issue.
+- **Nextcloud Docker trusted_proxies is an env-var-wins system.** The `reverse-proxy.config.php` entrypoint script unconditionally overwrites the `trusted_proxies` array from the `TRUSTED_PROXIES` env var. Any `occ config:system:set` changes are silently overridden on next container start.
+- **notify_push latency is significantly better than webhooks.** ~800ms from file upload to push notification vs ~10 seconds for the webhook job queue. Combined with peer notification for local changes, the full sync mesh now operates at 1-2 second latency in all directions.

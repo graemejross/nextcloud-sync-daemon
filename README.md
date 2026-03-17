@@ -1,13 +1,15 @@
 # nextcloud-sync-daemon
 
-Event-driven sync daemon for headless Nextcloud servers. Wraps `nextcloudcmd` with filesystem watching, webhook push notifications, and configurable polling fallback — in a single binary.
+Event-driven sync daemon for headless Nextcloud servers. Wraps `nextcloudcmd` with filesystem watching, server push notifications, and configurable polling fallback — in a single binary.
 
 ## Features
 
 - **Filesystem watcher** — detects local file changes via inotify and triggers immediate sync
-- **Webhook listener** — receives push notifications from Nextcloud when server-side files change
+- **notify_push (WebSocket)** — receives near-real-time server push events via Nextcloud's [notify_push](https://github.com/nextcloud/notify_push) app. Connects outbound — no inbound ports needed, works behind NAT/firewalls
+- **Webhook listener** — receives push notifications from Nextcloud when server-side files change (requires inbound connectivity from the Nextcloud server)
 - **Polling fallback** — periodic sync as a safety net when events are missed
 - **Unified event loop** — all triggers feed a single queue with deduplication and cooldown, preventing sync storms
+- **Peer notification** — after local changes sync, notify peer instances to sync immediately
 - **Health endpoint** — JSON status with uptime, sync counts, and source state
 - **Systemd-native** — `Type=notify` readiness, watchdog heartbeat, structured logging to journal
 
@@ -110,7 +112,7 @@ nextcloud-sync-daemon [flags]
 | `--validate` | Validate config and exit |
 | `--version` | Print version and exit |
 
-Without `--once`, the daemon runs continuously, syncing on events from enabled sources (watcher, webhook, poller).
+Without `--once`, the daemon runs continuously, syncing on events from enabled sources (watcher, notify_push, webhook, poller).
 
 ## Running as a systemd service
 
@@ -148,6 +150,55 @@ journalctl --user -u nextcloud-sync-daemon -f
 # Health endpoint (if enabled)
 curl http://127.0.0.1:8768/
 ```
+
+## notify_push setup (recommended for server-side events)
+
+[notify_push](https://github.com/nextcloud/notify_push) is the recommended way to receive server-side file change events. It uses an outbound WebSocket connection — no inbound ports needed, works behind NAT and firewalls.
+
+### 1. Install the notify_push app on your Nextcloud server
+
+```bash
+sudo -u www-data php /var/www/nextcloud/occ app:install notify_push
+```
+
+The app includes a push server binary. Follow the [notify_push setup guide](https://github.com/nextcloud/notify_push#setup) to run the binary and configure your reverse proxy. Then verify:
+
+```bash
+sudo -u www-data php /var/www/nextcloud/occ notify_push:setup https://your-server.example.com/push
+```
+
+All checks should pass.
+
+### 2. Enable notify_push in daemon config
+
+```yaml
+notify_push:
+  enabled: true
+  # url is auto-discovered from your server's capabilities API
+  # Optionally override: url: wss://your-server.example.com/push/ws
+```
+
+### 3. Verify
+
+Start the daemon and check logs for:
+
+```
+notify_push connected and authenticated
+```
+
+The daemon auto-discovers the WebSocket URL from your Nextcloud server's capabilities API. If your server changes URL, the daemon re-discovers on reconnect.
+
+### notify_push vs webhook
+
+| | notify_push | Webhook |
+|---|---|---|
+| Direction | Outbound (daemon → server) | Inbound (server → daemon) |
+| NAT/firewall | Works behind NAT | Requires inbound port |
+| Setup | Install app on server | Register webhook listeners via API |
+| Latency | ~1 second | ~10 seconds (Nextcloud job queue) |
+| Protocol | WebSocket | HTTP POST |
+
+You can enable both — the daemon deduplicates events via cooldown.
 
 ## Webhook setup (Nextcloud server)
 
@@ -285,7 +336,7 @@ The prototype used bash + inotifywait for filesystem watching, a Python HTTP ser
 
 ## Status
 
-**v0.2.0.** Health endpoint enhancements (#19), peer-to-peer notification (#17), sync test command (#18). ~112 tests across 8 packages.
+**v0.2.0-pre.** notify_push WebSocket support (#24), health endpoint enhancements (#19), peer-to-peer notification (#17), sync test command (#18). 99 tests across 9 packages.
 
 ## License
 

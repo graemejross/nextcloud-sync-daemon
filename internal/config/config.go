@@ -47,14 +47,15 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 
 // Config is the top-level configuration.
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Sync    SyncConfig    `yaml:"sync"`
-	Watch   WatchConfig   `yaml:"watch"`
-	Webhook WebhookConfig `yaml:"webhook"`
-	Poll    PollConfig    `yaml:"poll"`
-	Logging LogConfig     `yaml:"logging"`
-	Health  HealthConfig  `yaml:"health"`
-	Peers   []PeerConfig  `yaml:"peers"`
+	Server     ServerConfig     `yaml:"server"`
+	Sync       SyncConfig       `yaml:"sync"`
+	Watch      WatchConfig      `yaml:"watch"`
+	Webhook    WebhookConfig    `yaml:"webhook"`
+	Poll       PollConfig       `yaml:"poll"`
+	NotifyPush NotifyPushConfig `yaml:"notify_push"`
+	Logging    LogConfig        `yaml:"logging"`
+	Health     HealthConfig     `yaml:"health"`
+	Peers      []PeerConfig     `yaml:"peers"`
 }
 
 // PeerConfig defines a peer instance to notify after local syncs.
@@ -95,6 +96,13 @@ type WebhookConfig struct {
 type PollConfig struct {
 	Enabled  bool     `yaml:"enabled"`
 	Interval Duration `yaml:"interval"`
+}
+
+type NotifyPushConfig struct {
+	Enabled            bool     `yaml:"enabled"`
+	URL                string   `yaml:"url"`                 // optional, auto-discovered from server capabilities
+	ReconnectInterval  Duration `yaml:"reconnect_interval"`
+	ReconnectMax       Duration `yaml:"reconnect_max"`
 }
 
 type LogConfig struct {
@@ -158,6 +166,13 @@ func applyDefaults(cfg *Config) {
 
 	if cfg.Poll.Interval.Duration == 0 {
 		cfg.Poll.Interval.Duration = 60 * time.Second
+	}
+
+	if cfg.NotifyPush.ReconnectInterval.Duration == 0 {
+		cfg.NotifyPush.ReconnectInterval.Duration = 5 * time.Second
+	}
+	if cfg.NotifyPush.ReconnectMax.Duration == 0 {
+		cfg.NotifyPush.ReconnectMax.Duration = 5 * time.Minute
 	}
 
 	if cfg.Logging.Level == "" {
@@ -229,6 +244,23 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("poll.interval must be positive"))
 	}
 
+	// NotifyPush
+	if c.NotifyPush.URL != "" {
+		u, err := url.Parse(c.NotifyPush.URL)
+		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
+			errs = append(errs, fmt.Errorf("notify_push.url %q must use ws:// or wss:// scheme", c.NotifyPush.URL))
+		}
+	}
+	if c.NotifyPush.ReconnectInterval.Duration <= 0 {
+		errs = append(errs, errors.New("notify_push.reconnect_interval must be positive"))
+	}
+	if c.NotifyPush.ReconnectMax.Duration <= 0 {
+		errs = append(errs, errors.New("notify_push.reconnect_max must be positive"))
+	}
+	if c.NotifyPush.ReconnectMax.Duration < c.NotifyPush.ReconnectInterval.Duration {
+		errs = append(errs, errors.New("notify_push.reconnect_max must be >= notify_push.reconnect_interval"))
+	}
+
 	// Peers
 	for i, p := range c.Peers {
 		if p.URL == "" {
@@ -258,8 +290,8 @@ func (c *Config) Validate() error {
 // ValidateEventSources checks that at least one event source is enabled.
 // Called separately from Validate so that --once mode can skip this check.
 func (c *Config) ValidateEventSources() error {
-	if !c.Watch.Enabled && !c.Webhook.Enabled && !c.Poll.Enabled {
-		return errors.New("at least one event source (watch, webhook, poll) must be enabled for daemon mode")
+	if !c.Watch.Enabled && !c.Webhook.Enabled && !c.Poll.Enabled && !c.NotifyPush.Enabled {
+		return errors.New("at least one event source (watch, webhook, poll, notify_push) must be enabled for daemon mode")
 	}
 	return nil
 }

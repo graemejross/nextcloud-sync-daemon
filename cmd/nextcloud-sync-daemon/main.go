@@ -16,6 +16,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/notifypush"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/peer"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
@@ -140,6 +141,10 @@ func run() int {
 		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
 	}
 
+	if cfg.NotifyPush.Enabled {
+		sources = append(sources, notifypush.New(cfg, logger, healthStatus))
+	}
+
 	// Health HTTP endpoint
 	if cfg.Health.Enabled {
 		healthSrv := &http.Server{
@@ -196,6 +201,7 @@ func run() int {
 		"poll", cfg.Poll.Enabled,
 		"watch", cfg.Watch.Enabled,
 		"webhook", cfg.Webhook.Enabled,
+		"notify_push", cfg.NotifyPush.Enabled,
 		"health", cfg.Health.Enabled,
 	)
 

@@ -9,7 +9,7 @@ import (
 
 // Event represents a sync trigger from any source.
 type Event struct {
-	Source string    // "watcher", "webhook", "poller"
+	Source string    // "watcher", "webhook", "poller", "notify_push"
 	Time   time.Time // when the event was generated
 	Path   string    // file path that changed (empty for poll events)
 }

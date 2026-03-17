@@ -79,6 +79,19 @@ poll:
   # Polling interval (default: 60s)
   interval: 60s
 
+notify_push:
+  # Enable Nextcloud notify_push (WebSocket) for near-real-time server events.
+  # Requires the notify_push app installed on the Nextcloud server.
+  # No inbound ports needed — connects outbound to the server.
+  enabled: false
+
+  # WebSocket endpoint URL (optional — auto-discovered from server capabilities if omitted)
+  # url: wss://cloud.example.com/push/ws
+
+  # Reconnect backoff: initial delay and maximum delay (default: 5s / 5m)
+  # reconnect_interval: 5s
+  # reconnect_max: 5m
+
 logging:
   # Log level: debug, info, warn, error (default: info)
   level: info

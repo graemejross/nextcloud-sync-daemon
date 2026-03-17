@@ -48,8 +48,30 @@ func fakeCapabilitiesServer(t *testing.T, wsURL string) *httptest.Server {
 		resp := capabilitiesResponse{}
 		resp.OCS.Data.Capabilities.NotifyPush.Endpoints.WebSocket = wsURL
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Logf("encode error: %v", err)
+		}
 	}))
+}
+
+// doAuth performs the server side of the auth handshake: read username, read password, send response.
+func doAuth(ctx context.Context, conn *websocket.Conn, response string) error {
+	if _, _, err := conn.Read(ctx); err != nil {
+		return err
+	}
+	if _, _, err := conn.Read(ctx); err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, []byte(response))
+}
+
+// readUntilClose reads from conn until an error (used to keep test server connections alive).
+func readUntilClose(ctx context.Context, conn *websocket.Conn) {
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+	}
 }
 
 // testClient creates a Client with test defaults.
@@ -123,15 +145,12 @@ func TestAuthentication(t *testing.T) {
 		gotPass = string(msg)
 
 		// Send authenticated
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
-
-		// Keep connection open until client disconnects
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("authenticated")); err != nil {
+			t.Logf("write error: %v", err)
+			return
 		}
+
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 
@@ -142,7 +161,7 @@ func TestAuthentication(t *testing.T) {
 	defer cancel()
 
 	trigger := make(chan daemon.Event, 10)
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	// Wait for auth to complete
 	time.Sleep(200 * time.Millisecond)
@@ -159,12 +178,9 @@ func TestAuthentication(t *testing.T) {
 func TestAuthenticationFailed(t *testing.T) {
 	wsSrv := fakeNotifyPushServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		// Read username + password
-		conn.Read(ctx)
-		conn.Read(ctx)
-		// Reject
-		conn.Write(ctx, websocket.MessageText, []byte("err: Invalid credentials"))
-		conn.Close(websocket.StatusNormalClosure, "")
+		if err := doAuth(ctx, conn, "err: Invalid credentials"); err != nil {
+			t.Logf("auth handshake error: %v", err)
+		}
 	})
 	defer wsSrv.Close()
 
@@ -177,7 +193,7 @@ func TestAuthenticationFailed(t *testing.T) {
 
 	// Start should reconnect (not return immediately) since ctx is still active.
 	// We check that no events are emitted.
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -193,21 +209,18 @@ func TestAuthenticationFailed(t *testing.T) {
 func TestNotifyFileEvent(t *testing.T) {
 	wsSrv := fakeNotifyPushServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		// Auth handshake
-		conn.Read(ctx)
-		conn.Read(ctx)
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
+		if err := doAuth(ctx, conn, "authenticated"); err != nil {
+			t.Logf("auth error: %v", err)
+			return
+		}
 
 		// Send file notification
-		conn.Write(ctx, websocket.MessageText, []byte("notify_file"))
-
-		// Keep alive
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("notify_file")); err != nil {
+			t.Logf("write error: %v", err)
+			return
 		}
+
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 
@@ -218,7 +231,7 @@ func TestNotifyFileEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	select {
 	case event := <-trigger:
@@ -236,16 +249,13 @@ func TestNotifyFileEvent(t *testing.T) {
 func TestNotifyFileIdEvent(t *testing.T) {
 	wsSrv := fakeNotifyPushServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		conn.Read(ctx)
-		conn.Read(ctx)
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
-		conn.Write(ctx, websocket.MessageText, []byte("notify_file_id [1,2,3]"))
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := doAuth(ctx, conn, "authenticated"); err != nil {
+			return
 		}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("notify_file_id [1,2,3]")); err != nil {
+			return
+		}
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 
@@ -256,7 +266,7 @@ func TestNotifyFileIdEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	select {
 	case event := <-trigger:
@@ -271,20 +281,19 @@ func TestNotifyFileIdEvent(t *testing.T) {
 func TestIgnoredEvents(t *testing.T) {
 	wsSrv := fakeNotifyPushServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		conn.Read(ctx)
-		conn.Read(ctx)
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
+		if err := doAuth(ctx, conn, "authenticated"); err != nil {
+			return
+		}
 
 		// Send non-file notifications
-		conn.Write(ctx, websocket.MessageText, []byte("notify_activity"))
-		conn.Write(ctx, websocket.MessageText, []byte("notify_notification"))
-
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("notify_activity")); err != nil {
+			return
 		}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("notify_notification")); err != nil {
+			return
+		}
+
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 
@@ -295,7 +304,7 @@ func TestIgnoredEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	// Wait for messages to be processed
 	time.Sleep(300 * time.Millisecond)
@@ -315,9 +324,9 @@ func TestReconnectOnDisconnect(t *testing.T) {
 		ctx := context.Background()
 		connectCount++
 
-		conn.Read(ctx)
-		conn.Read(ctx)
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
+		if err := doAuth(ctx, conn, "authenticated"); err != nil {
+			return
+		}
 
 		if connectCount == 1 {
 			// First connection: close immediately after auth
@@ -326,13 +335,10 @@ func TestReconnectOnDisconnect(t *testing.T) {
 		}
 
 		// Second connection: send a file event then stay alive
-		conn.Write(ctx, websocket.MessageText, []byte("notify_file"))
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := conn.Write(ctx, websocket.MessageText, []byte("notify_file")); err != nil {
+			return
 		}
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 
@@ -343,7 +349,7 @@ func TestReconnectOnDisconnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go c.Start(ctx, trigger)
+	go func() { _ = c.Start(ctx, trigger) }()
 
 	// Should get an event from the second connection after reconnect
 	select {
@@ -363,15 +369,10 @@ func TestReconnectOnDisconnect(t *testing.T) {
 func TestContextCancellation(t *testing.T) {
 	wsSrv := fakeNotifyPushServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		conn.Read(ctx)
-		conn.Read(ctx)
-		conn.Write(ctx, websocket.MessageText, []byte("authenticated"))
-		for {
-			_, _, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
+		if err := doAuth(ctx, conn, "authenticated"); err != nil {
+			return
 		}
+		readUntilClose(ctx, conn)
 	})
 	defer wsSrv.Close()
 

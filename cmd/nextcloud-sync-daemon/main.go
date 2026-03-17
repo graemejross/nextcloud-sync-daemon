@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/peer"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
@@ -33,10 +35,12 @@ func run() int {
 		once        bool
 		validate    bool
 		showVersion bool
+		test        bool
 	)
 
 	flag.StringVar(&configPath, "config", "", "path to config file")
 	flag.BoolVar(&once, "once", false, "run a single sync and exit")
+	flag.BoolVar(&test, "test", false, "write a marker file, sync, report latency, clean up, and exit")
 	flag.BoolVar(&validate, "validate", false, "validate config and exit")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
@@ -88,6 +92,10 @@ func run() int {
 	ctx, stop := makeContext()
 	defer stop()
 
+	if test {
+		return runSyncTest(cfg, executor, logger)
+	}
+
 	if once {
 		// Run single sync and exit
 		result, err := executor.Run(ctx)
@@ -103,6 +111,9 @@ func run() int {
 		logger.Error("config error", "error", err)
 		return 1
 	}
+
+	// Always create health status — used by webhook and engine even if HTTP endpoint is disabled
+	healthStatus := health.NewStatus()
 
 	var sources []daemon.EventSource
 
@@ -121,6 +132,7 @@ func run() int {
 			cfg.Webhook.Secret,
 			cfg.Webhook.PathFilter,
 			logger,
+			healthStatus,
 		))
 	}
 
@@ -128,10 +140,8 @@ func run() int {
 		sources = append(sources, poller.New(cfg.Poll.Interval.Duration, logger))
 	}
 
-	// Health endpoint
-	var healthStatus *health.Status
+	// Health HTTP endpoint
 	if cfg.Health.Enabled {
-		healthStatus = health.NewStatus()
 		healthSrv := &http.Server{
 			Addr:    cfg.Health.Listen,
 			Handler: healthStatus.Handler(),
@@ -150,7 +160,14 @@ func run() int {
 		}()
 	}
 
-	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, healthStatus, sources...)
+	// Peer notification
+	var notifier daemon.PeerNotifier
+	if len(cfg.Peers) > 0 {
+		notifier = peer.New(cfg.Peers, logger, healthStatus)
+		logger.Info("peer notification enabled", "peers", len(cfg.Peers))
+	}
+
+	eng := engine.New(executor, cfg.Watch.Cooldown.Duration, logger, healthStatus, notifier, sources...)
 
 	// Systemd readiness notification — called after all sources start
 	eng.OnReady = func() {
@@ -217,4 +234,50 @@ func setupLogging(cfg *config.Config) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+// runSyncTest writes a marker file, syncs, reports latency, cleans up, and exits.
+func runSyncTest(cfg *config.Config, executor daemon.SyncExecutor, logger *slog.Logger) int {
+	ctx, stop := makeContext()
+	defer stop()
+
+	markerName := fmt.Sprintf(".nsd-sync-test-%d", time.Now().Unix())
+	markerPath := filepath.Join(cfg.Sync.LocalDir, markerName)
+
+	fmt.Printf("Sync test: writing marker file %s\n", markerName)
+	if err := os.WriteFile(markerPath, []byte("nsd sync test\n"), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing marker file: %v\n", err)
+		return 1
+	}
+
+	start := time.Now()
+	result, err := executor.Run(ctx)
+	duration := time.Since(start)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Sync failed: %v\n", err)
+		_ = os.Remove(markerPath)
+		return 1
+	}
+
+	fmt.Printf("Sync completed: exit code %d, duration %.1fs\n", result.ExitCode, duration.Seconds())
+
+	if result.ExitCode != 0 {
+		fmt.Fprintln(os.Stderr, "Sync test failed (non-zero exit code).")
+		_ = os.Remove(markerPath)
+		return 1
+	}
+
+	fmt.Println("Cleaning up marker file...")
+	if err := os.Remove(markerPath); err != nil {
+		logger.Warn("failed to remove marker file", "path", markerPath, "error", err)
+	}
+
+	// Second sync to propagate the deletion
+	if _, err := executor.Run(ctx); err != nil {
+		logger.Warn("cleanup sync failed", "error", err)
+	}
+
+	fmt.Println("Sync test passed.")
+	return 0
 }

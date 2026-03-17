@@ -229,6 +229,96 @@ func TestStatusTransitions(t *testing.T) {
 	}
 }
 
+func TestTriggerCounts(t *testing.T) {
+	s := NewStatus()
+	s.RecordSync(&daemon.SyncResult{ExitCode: 0, Trigger: "watcher"})
+	s.RecordSync(&daemon.SyncResult{ExitCode: 0, Trigger: "watcher"})
+	s.RecordSync(&daemon.SyncResult{ExitCode: 0, Trigger: "webhook"})
+	s.RecordSync(&daemon.SyncResult{ExitCode: 1, Trigger: "poller"})
+
+	handler := s.Handler()
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.TriggerCounts["watcher"] != 2 {
+		t.Errorf("trigger_counts.watcher = %d, want 2", resp.TriggerCounts["watcher"])
+	}
+	if resp.TriggerCounts["webhook"] != 1 {
+		t.Errorf("trigger_counts.webhook = %d, want 1", resp.TriggerCounts["webhook"])
+	}
+	if resp.TriggerCounts["poller"] != 1 {
+		t.Errorf("trigger_counts.poller = %d, want 1", resp.TriggerCounts["poller"])
+	}
+}
+
+func TestTriggerCountsNoSyncs(t *testing.T) {
+	s := NewStatus()
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.TriggerCounts == nil {
+		t.Error("trigger_counts should be empty map, not nil")
+	}
+	if len(resp.TriggerCounts) != 0 {
+		t.Errorf("trigger_counts length = %d, want 0", len(resp.TriggerCounts))
+	}
+}
+
+func TestRecordWebhookReceived(t *testing.T) {
+	s := NewStatus()
+	ts := time.Date(2026, 3, 17, 14, 30, 0, 0, time.UTC)
+	s.RecordWebhookReceived(ts)
+
+	handler := s.Handler()
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.LastWebhookReceived == nil {
+		t.Fatal("last_webhook_received should not be nil")
+	}
+	if *resp.LastWebhookReceived != "2026-03-17T14:30:00Z" {
+		t.Errorf("last_webhook_received = %q, want 2026-03-17T14:30:00Z", *resp.LastWebhookReceived)
+	}
+}
+
+func TestRecordWebhookReceivedNotSet(t *testing.T) {
+	s := NewStatus()
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.LastWebhookReceived != nil {
+		t.Errorf("last_webhook_received = %v, want nil", resp.LastWebhookReceived)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewStatus()
 	handler := s.Handler()
@@ -261,6 +351,15 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			s.SetSourceRunning(fmt.Sprintf("source-%d", n%5), n%2 == 0)
 		}(i)
+	}
+
+	// Hammer RecordWebhookReceived
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.RecordWebhookReceived(time.Now())
+		}()
 	}
 
 	// Hammer Handler reads

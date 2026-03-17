@@ -84,7 +84,7 @@ func TestEngineSingleSync(t *testing.T) {
 	exec := &fakeExecutor{}
 	src := &fakeSource{name: "test", events: 1, interval: 10 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src)
+	eng := New(exec, 0, quietLogger(), nil, nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestEngineCoalescing(t *testing.T) {
 	exec := &fakeExecutor{delay: 50 * time.Millisecond}
 	src := &fakeSource{name: "burst", events: 20, interval: 5 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src)
+	eng := New(exec, 0, quietLogger(), nil, nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -125,7 +125,7 @@ func TestEngineCooldown(t *testing.T) {
 	src := &fakeSource{name: "rapid", events: 0, interval: 10 * time.Millisecond}
 
 	// 200ms cooldown — should severely limit syncs
-	eng := New(exec, 200*time.Millisecond, quietLogger(), nil, src)
+	eng := New(exec, 200*time.Millisecond, quietLogger(), nil, nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -147,7 +147,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	exec := &fakeExecutor{delay: 50 * time.Millisecond}
 	src := &fakeSource{name: "test", events: 0, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src)
+	eng := New(exec, 0, quietLogger(), nil, nil, src)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -177,7 +177,7 @@ func TestEngineMultipleSources(t *testing.T) {
 	src1 := &fakeSource{name: "source1", events: 1, interval: 10 * time.Millisecond}
 	src2 := &fakeSource{name: "source2", events: 1, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src1, src2)
+	eng := New(exec, 0, quietLogger(), nil, nil, src1, src2)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -191,7 +191,7 @@ func TestEngineMultipleSources(t *testing.T) {
 
 func TestEngineNoSources(t *testing.T) {
 	exec := &fakeExecutor{}
-	eng := New(exec, 0, quietLogger(), nil)
+	eng := New(exec, 0, quietLogger(), nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -210,7 +210,7 @@ func TestEngineNonZeroExitContinues(t *testing.T) {
 	exec := &fakeExecutor{exitCode: 1}
 	src := &fakeSource{name: "test", events: 0, interval: 20 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src)
+	eng := New(exec, 0, quietLogger(), nil, nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
@@ -228,7 +228,7 @@ func TestEngineHealthRecording(t *testing.T) {
 	src := &fakeSource{name: "test-source", events: 2, interval: 10 * time.Millisecond}
 	h := health.NewStatus()
 
-	eng := New(exec, 0, quietLogger(), h, src)
+	eng := New(exec, 0, quietLogger(), h, nil, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -246,7 +246,7 @@ func TestEngineOnReady(t *testing.T) {
 	exec := &fakeExecutor{}
 	src := &fakeSource{name: "test", events: 1, interval: 10 * time.Millisecond}
 
-	eng := New(exec, 0, quietLogger(), nil, src)
+	eng := New(exec, 0, quietLogger(), nil, nil, src)
 
 	readyCalled := false
 	eng.OnReady = func() {
@@ -260,5 +260,91 @@ func TestEngineOnReady(t *testing.T) {
 
 	if !readyCalled {
 		t.Error("OnReady callback was not called")
+	}
+}
+
+// fakeNotifier counts NotifyPeers calls.
+type fakeNotifier struct {
+	calls atomic.Int64
+}
+
+func (f *fakeNotifier) NotifyPeers(ctx context.Context) {
+	f.calls.Add(1)
+}
+
+func TestEngineNotifierCalledForWatcher(t *testing.T) {
+	exec := &fakeExecutor{}
+	notif := &fakeNotifier{}
+	src := &fakeSource{name: "watcher", events: 2, interval: 10 * time.Millisecond}
+
+	eng := New(exec, 0, quietLogger(), nil, notif, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	_ = eng.Run(ctx)
+
+	// Give goroutines time to complete
+	time.Sleep(50 * time.Millisecond)
+
+	if calls := notif.calls.Load(); calls < 1 {
+		t.Errorf("notifier calls = %d, want >= 1 for watcher source", calls)
+	}
+}
+
+func TestEngineNotifierNotCalledForWebhook(t *testing.T) {
+	exec := &fakeExecutor{}
+	notif := &fakeNotifier{}
+	src := &fakeSource{name: "webhook", events: 2, interval: 10 * time.Millisecond}
+
+	eng := New(exec, 0, quietLogger(), nil, notif, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_ = eng.Run(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if calls := notif.calls.Load(); calls != 0 {
+		t.Errorf("notifier calls = %d, want 0 for webhook source", calls)
+	}
+}
+
+func TestEngineNotifierNotCalledForPoller(t *testing.T) {
+	exec := &fakeExecutor{}
+	notif := &fakeNotifier{}
+	src := &fakeSource{name: "poller", events: 2, interval: 10 * time.Millisecond}
+
+	eng := New(exec, 0, quietLogger(), nil, notif, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_ = eng.Run(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if calls := notif.calls.Load(); calls != 0 {
+		t.Errorf("notifier calls = %d, want 0 for poller source", calls)
+	}
+}
+
+func TestEngineNotifierNotCalledOnFailure(t *testing.T) {
+	exec := &fakeExecutor{exitCode: 1}
+	notif := &fakeNotifier{}
+	src := &fakeSource{name: "watcher", events: 2, interval: 10 * time.Millisecond}
+
+	eng := New(exec, 0, quietLogger(), nil, notif, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_ = eng.Run(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if calls := notif.calls.Load(); calls != 0 {
+		t.Errorf("notifier calls = %d, want 0 for failed syncs", calls)
 	}
 }

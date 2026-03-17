@@ -54,6 +54,13 @@ type Config struct {
 	Poll    PollConfig    `yaml:"poll"`
 	Logging LogConfig     `yaml:"logging"`
 	Health  HealthConfig  `yaml:"health"`
+	Peers   []PeerConfig  `yaml:"peers"`
+}
+
+// PeerConfig defines a peer instance to notify after local syncs.
+type PeerConfig struct {
+	URL    string `yaml:"url"`
+	Secret string `yaml:"secret"`
 }
 
 type ServerConfig struct {
@@ -220,6 +227,18 @@ func (c *Config) Validate() error {
 	// Poll
 	if c.Poll.Interval.Duration <= 0 {
 		errs = append(errs, errors.New("poll.interval must be positive"))
+	}
+
+	// Peers
+	for i, p := range c.Peers {
+		if p.URL == "" {
+			errs = append(errs, fmt.Errorf("peers[%d].url is required", i))
+		} else if u, err := url.Parse(p.URL); err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("peers[%d].url %q is not a valid URL", i, p.URL))
+		}
+		if p.Secret == "" {
+			errs = append(errs, fmt.Errorf("peers[%d].secret is required", i))
+		}
 	}
 
 	// Logging

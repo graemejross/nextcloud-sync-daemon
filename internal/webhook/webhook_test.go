@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
 )
 
 func quietLogger() *slog.Logger {
@@ -19,7 +21,7 @@ func quietLogger() *slog.Logger {
 }
 
 func testServer(pathFilter string) (*Server, chan daemon.Event, http.HandlerFunc) {
-	s := New("127.0.0.1:0", "test-secret", pathFilter, quietLogger())
+	s := New("127.0.0.1:0", "test-secret", pathFilter, quietLogger(), nil)
 	trigger := make(chan daemon.Event, 10)
 	handler := s.handler(trigger)
 	return s, trigger, handler
@@ -225,7 +227,7 @@ func TestWebhookEmptyBody(t *testing.T) {
 }
 
 func TestWebhookDropsWhenFull(t *testing.T) {
-	s := New("127.0.0.1:0", "test-secret", "/", quietLogger())
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger(), nil)
 	trigger := make(chan daemon.Event, 1)
 	handler := s.handler(trigger)
 
@@ -250,7 +252,7 @@ func TestWebhookDropsWhenFull(t *testing.T) {
 }
 
 func TestWebhookServerStartStop(t *testing.T) {
-	s := New("127.0.0.1:0", "test-secret", "/", quietLogger())
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger(), nil)
 	trigger := make(chan daemon.Event, 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -278,7 +280,7 @@ func TestWebhookServerStartStop(t *testing.T) {
 func TestWebhookServerServes(t *testing.T) {
 	// Use port 0 for auto-assignment — but Start() uses the configured listen address.
 	// For this test, use a known free port.
-	s := New("127.0.0.1:18767", "test-secret", "/", quietLogger())
+	s := New("127.0.0.1:18767", "test-secret", "/", quietLogger(), nil)
 	trigger := make(chan daemon.Event, 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -321,7 +323,7 @@ func TestWebhookServerServes(t *testing.T) {
 }
 
 func TestExtractPath(t *testing.T) {
-	s := New("", "", "/", quietLogger())
+	s := New("", "", "/", quietLogger(), nil)
 
 	tests := []struct {
 		name string
@@ -371,7 +373,7 @@ func TestExtractPath(t *testing.T) {
 }
 
 func TestWebhookRateLimiting(t *testing.T) {
-	s := New("127.0.0.1:0", "test-secret", "/", quietLogger())
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger(), nil)
 	s.rateMin = 100 * time.Millisecond // short interval for testing
 	trigger := make(chan daemon.Event, 10)
 	handler := s.handler(trigger)
@@ -421,9 +423,66 @@ func TestWebhookRateLimiting(t *testing.T) {
 }
 
 func TestWebhookName(t *testing.T) {
-	s := New("", "", "/", quietLogger())
+	s := New("", "", "/", quietLogger(), nil)
 	if s.Name() != "webhook" {
 		t.Errorf("name = %q, want %q", s.Name(), "webhook")
+	}
+}
+
+func TestWebhookRecordsHealthOnValidPost(t *testing.T) {
+	h := health.NewStatus()
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger(), h)
+	trigger := make(chan daemon.Event, 10)
+	handler := s.handler(trigger)
+
+	body := `{"event":{"class":"NodeWrittenEvent","node":{"path":"/test.txt"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Webhook-Secret", "test-secret")
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify health recorded the webhook
+	rec := httptest.NewRecorder()
+	h.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+	var resp struct {
+		LastWebhookReceived *string `json:"last_webhook_received"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if resp.LastWebhookReceived == nil {
+		t.Error("last_webhook_received should be set after valid webhook")
+	}
+}
+
+func TestWebhookNoHealthOnInvalidSecret(t *testing.T) {
+	h := health.NewStatus()
+	s := New("127.0.0.1:0", "test-secret", "/", quietLogger(), h)
+	trigger := make(chan daemon.Event, 10)
+	handler := s.handler(trigger)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+	req.Header.Set("X-Webhook-Secret", "wrong-secret")
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	// Verify health did NOT record the webhook
+	rec := httptest.NewRecorder()
+	h.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+	var resp struct {
+		LastWebhookReceived *string `json:"last_webhook_received"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if resp.LastWebhookReceived != nil {
+		t.Error("last_webhook_received should NOT be set after invalid secret")
 	}
 }
 

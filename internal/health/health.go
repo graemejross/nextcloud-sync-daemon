@@ -12,19 +12,22 @@ import (
 
 // Status tracks the daemon's health state. All methods are safe for concurrent use.
 type Status struct {
-	mu        sync.RWMutex
-	started   time.Time
-	lastSync  *daemon.SyncResult
-	syncCount int64
-	failCount int64
-	sources   map[string]bool
+	mu                  sync.RWMutex
+	started             time.Time
+	lastSync            *daemon.SyncResult
+	syncCount           int64
+	failCount           int64
+	sources             map[string]bool
+	triggerCounts       map[string]int64
+	lastWebhookReceived *time.Time
 }
 
 // NewStatus creates a Status with the current time as the start time.
 func NewStatus() *Status {
 	return &Status{
-		started: time.Now(),
-		sources: make(map[string]bool),
+		started:       time.Now(),
+		sources:       make(map[string]bool),
+		triggerCounts: make(map[string]int64),
 	}
 }
 
@@ -33,11 +36,21 @@ func (s *Status) RecordSync(result *daemon.SyncResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastSync = result
+	if result.Trigger != "" {
+		s.triggerCounts[result.Trigger]++
+	}
 	if result.ExitCode != 0 || result.Error != nil {
 		s.failCount++
 	} else {
 		s.syncCount++
 	}
+}
+
+// RecordWebhookReceived records the time a valid webhook was received.
+func (s *Status) RecordWebhookReceived(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastWebhookReceived = &t
 }
 
 // SetSourceRunning updates the running state of an event source.
@@ -49,14 +62,16 @@ func (s *Status) SetSourceRunning(name string, running bool) {
 
 // response is the JSON structure returned by the health endpoint.
 type response struct {
-	Status           string          `json:"status"`
-	Uptime           string          `json:"uptime"`
-	LastSync         *string         `json:"last_sync"`
-	LastSyncDuration *int64          `json:"last_sync_duration_ms"`
-	LastSyncTrigger  *string         `json:"last_sync_trigger"`
-	SyncCount        int64           `json:"sync_count"`
-	FailCount        int64           `json:"fail_count"`
-	Sources          map[string]bool `json:"sources"`
+	Status              string           `json:"status"`
+	Uptime              string           `json:"uptime"`
+	LastSync            *string          `json:"last_sync"`
+	LastSyncDuration    *int64           `json:"last_sync_duration_ms"`
+	LastSyncTrigger     *string          `json:"last_sync_trigger"`
+	SyncCount           int64            `json:"sync_count"`
+	FailCount           int64            `json:"fail_count"`
+	Sources             map[string]bool  `json:"sources"`
+	TriggerCounts       map[string]int64 `json:"trigger_counts"`
+	LastWebhookReceived *string          `json:"last_webhook_received"`
 }
 
 // Handler returns an http.HandlerFunc that serves the health check JSON response.
@@ -65,12 +80,19 @@ func (s *Status) Handler() http.HandlerFunc {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 
+		// Copy triggerCounts under lock to avoid exposing internal map
+		counts := make(map[string]int64, len(s.triggerCounts))
+		for k, v := range s.triggerCounts {
+			counts[k] = v
+		}
+
 		resp := response{
-			Status:    s.computeStatus(),
-			Uptime:    time.Since(s.started).Truncate(time.Second).String(),
-			SyncCount: s.syncCount,
-			FailCount: s.failCount,
-			Sources:   s.sources,
+			Status:        s.computeStatus(),
+			Uptime:        time.Since(s.started).Truncate(time.Second).String(),
+			SyncCount:     s.syncCount,
+			FailCount:     s.failCount,
+			Sources:       s.sources,
+			TriggerCounts: counts,
 		}
 
 		if s.lastSync != nil {
@@ -79,6 +101,11 @@ func (s *Status) Handler() http.HandlerFunc {
 			dur := s.lastSync.Duration.Milliseconds()
 			resp.LastSyncDuration = &dur
 			resp.LastSyncTrigger = &s.lastSync.Trigger
+		}
+
+		if s.lastWebhookReceived != nil {
+			ts := s.lastWebhookReceived.UTC().Format(time.RFC3339)
+			resp.LastWebhookReceived = &ts
 		}
 
 		w.Header().Set("Content-Type", "application/json")

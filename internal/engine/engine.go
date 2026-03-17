@@ -15,6 +15,7 @@ import (
 // runs the main loop with cooldown enforcement, and handles graceful shutdown.
 type Engine struct {
 	executor daemon.SyncExecutor
+	notifier daemon.PeerNotifier
 	sources  []daemon.EventSource
 	events   chan daemon.Event
 	cooldown time.Duration
@@ -24,10 +25,11 @@ type Engine struct {
 }
 
 // New creates an Engine with the given executor, cooldown period, and event sources.
-// The health parameter is optional (may be nil).
-func New(executor daemon.SyncExecutor, cooldown time.Duration, logger *slog.Logger, health *health.Status, sources ...daemon.EventSource) *Engine {
+// The health and notifier parameters are optional (may be nil).
+func New(executor daemon.SyncExecutor, cooldown time.Duration, logger *slog.Logger, health *health.Status, notifier daemon.PeerNotifier, sources ...daemon.EventSource) *Engine {
 	return &Engine{
 		executor: executor,
+		notifier: notifier,
 		sources:  sources,
 		events:   make(chan daemon.Event, 1), // capacity 1 for coalescing
 		cooldown: cooldown,
@@ -129,6 +131,11 @@ func (e *Engine) Run(ctx context.Context) error {
 						"duration_ms", result.Duration.Milliseconds(),
 						"sync_count", syncCount,
 					)
+					// Notify peers after successful watcher-triggered syncs.
+					// Not webhook (prevents echo loops) or poller (no directional info).
+					if e.notifier != nil && event.Source == "watcher" {
+						go e.notifier.NotifyPeers(ctx)
+					}
 				}
 			}
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
 )
 
 // Server listens for Nextcloud webhook events and sends sync triggers.
@@ -24,6 +25,7 @@ type Server struct {
 	secret     string
 	pathFilter string
 	logger     *slog.Logger
+	health     *health.Status
 
 	// Per-IP rate limiting
 	rateMu      sync.Mutex
@@ -33,12 +35,14 @@ type Server struct {
 }
 
 // New creates a webhook Server with per-IP rate limiting (5 seconds between requests per IP).
-func New(listen, secret, pathFilter string, logger *slog.Logger) *Server {
+// The health parameter is optional (may be nil).
+func New(listen, secret, pathFilter string, logger *slog.Logger, health *health.Status) *Server {
 	return &Server{
 		listen:     listen,
 		secret:     secret,
 		pathFilter: pathFilter,
 		logger:     logger,
+		health:     health,
 		rateMap:    make(map[string]time.Time),
 		rateMin:    5 * time.Second,
 	}
@@ -111,6 +115,11 @@ func (s *Server) handler(trigger chan<- daemon.Event) http.HandlerFunc {
 			)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+
+		// Record webhook receipt for health reporting
+		if s.health != nil {
+			s.health.RecordWebhookReceived(time.Now())
 		}
 
 		// Per-IP rate limiting

@@ -36,3 +36,9 @@ type SyncExecutor interface {
 	// Run executes a sync. Returns when the sync completes.
 	Run(ctx context.Context) (*SyncResult, error)
 }
+
+// PeerNotifier sends sync notifications to peer instances.
+type PeerNotifier interface {
+	// NotifyPeers sends a notification to all configured peers.
+	NotifyPeers(ctx context.Context)
+}

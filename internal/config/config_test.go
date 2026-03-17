@@ -473,6 +473,118 @@ sync:
 	}
 }
 
+func TestPeerValidation(t *testing.T) {
+	t.Run("valid peers", func(t *testing.T) {
+		path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret
+sync:
+  local_dir: /tmp/nc
+poll:
+  enabled: true
+peers:
+  - url: "http://other-host:8767/webhook"
+    secret: "shared-secret"
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.Peers) != 1 {
+			t.Fatalf("peers len = %d, want 1", len(cfg.Peers))
+		}
+		if cfg.Peers[0].URL != "http://other-host:8767/webhook" {
+			t.Errorf("peer url = %q", cfg.Peers[0].URL)
+		}
+	})
+
+	t.Run("no peers is valid", func(t *testing.T) {
+		path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret
+sync:
+  local_dir: /tmp/nc
+poll:
+  enabled: true
+`)
+		_, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("peer missing url", func(t *testing.T) {
+		path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret
+sync:
+  local_dir: /tmp/nc
+poll:
+  enabled: true
+peers:
+  - secret: "s"
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !contains(err.Error(), "peers[0].url is required") {
+			t.Errorf("error = %q, want peers[0].url", err.Error())
+		}
+	})
+
+	t.Run("peer invalid url", func(t *testing.T) {
+		path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret
+sync:
+  local_dir: /tmp/nc
+poll:
+  enabled: true
+peers:
+  - url: "not-a-url"
+    secret: "s"
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !contains(err.Error(), "not a valid URL") {
+			t.Errorf("error = %q, want 'not a valid URL'", err.Error())
+		}
+	})
+
+	t.Run("peer missing secret", func(t *testing.T) {
+		path := writeConfig(t, `
+server:
+  url: https://cloud.example.com
+  username: alice
+  password: secret
+sync:
+  local_dir: /tmp/nc
+poll:
+  enabled: true
+peers:
+  - url: "http://host:8767/webhook"
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !contains(err.Error(), "peers[0].secret is required") {
+			t.Errorf("error = %q, want peers[0].secret", err.Error())
+		}
+	})
+}
+
 func TestInvalidYAML(t *testing.T) {
 	path := writeConfig(t, `{{{invalid yaml`)
 	_, err := Load(path)

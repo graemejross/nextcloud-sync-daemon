@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/config"
@@ -51,6 +52,19 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, e.cfg.Sync.NextcloudCmd, args...)
+
+	// Kernel-level orphan prevention (Refs #27):
+	//   Pdeathsig: SIGKILL — Linux kernel sends SIGKILL to this child if the
+	//     daemon dies for any reason (including SIGKILL/OOM where Go cannot
+	//     run cleanup). Without this, a killed daemon leaves nextcloudcmd
+	//     orphaned to PID 1, and the next daemon instance spawns its own
+	//     parallel client → thrashing.
+	//   Setpgid: true — put nextcloudcmd in its own process group so signals
+	//     reach the entire subprocess tree if it spawns children of its own.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGKILL,
+		Setpgid:   true,
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

@@ -24,22 +24,30 @@ Wants=network-online.target
 # Type=notify: daemon signals readiness after config validation and source startup
 Type=notify
 
+# Belt-and-braces: kill any orphan nextcloudcmd before starting (Refs #27).
+# The daemon's Pdeathsig handles orphans at the kernel level, but if a user
+# manually started nextcloudcmd outside the daemon this catches it too.
+ExecStartPre=-/usr/bin/pkill -f nextcloudcmd
+
 ExecStart=/usr/local/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
 
 # Restart on failure with 5-second delay
 Restart=on-failure
 RestartSec=5
 
-# Watchdog: daemon sends heartbeats every 60s (half this interval).
-# systemd restarts the daemon if heartbeats stop.
-WatchdogSec=120
+# Watchdog: daemon sends heartbeats every WatchdogSec/2 from a goroutine that
+# runs independently of sync work, so a slow sync does not miss its window.
+# Generous 30 min interval gives huge headroom on slow servers (Refs #27).
+WatchdogSec=1800
 
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# Allow writes only to the sync directory — adjust this path
-ReadWritePaths=/home/user/nextcloud
+# Allow writes only to the sync directory — ADJUST THIS PATH for your install.
+# Must be an existing absolute path; systemd refuses to start (status=226/NAMESPACE)
+# if the path does not exist.
+ReadWritePaths=/home/graeme/nextcloud
 PrivateTmp=yes
 # Hide /proc entries from other users (systemd 247+).
 # Prevents other users from seeing nextcloudcmd's command-line arguments,

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	sdnotify "github.com/coreos/go-systemd/v22/daemon"
@@ -112,6 +114,35 @@ func run() int {
 		logger.Error("config error", "error", err)
 		return 1
 	}
+
+	// Single-instance lock (Refs #27): prevent two daemons from ever running
+	// concurrently against the same local_dir, regardless of how they were
+	// started (orphan, manual, systemd race). The lock auto-releases when the
+	// process exits — no stale-pidfile cleanup needed.
+	lockPath := filepath.Join(os.TempDir(), "nextcloud-sync-daemon.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		logger.Error("failed to open lock file", "path", lockPath, "error", err)
+		return 1
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		existingPid, _ := os.ReadFile(lockPath)
+		logger.Error("another nextcloud-sync-daemon instance is already running",
+			"lock", lockPath,
+			"holder_pid", strings.TrimSpace(string(existingPid)),
+			"error", err,
+		)
+		_ = lockFile.Close()
+		return 1
+	}
+	// Write our PID into the lock file for diagnostics. Ignore errors — the
+	// lock itself is what guarantees mutual exclusion, the PID is informational.
+	_ = lockFile.Truncate(0)
+	_, _ = lockFile.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0)
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}()
 
 	// Always create health status — used by webhook and engine even if HTTP endpoint is disabled
 	healthStatus := health.NewStatus()

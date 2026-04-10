@@ -637,3 +637,51 @@ New tests use `httptest.Server` + `websocket.Accept` for fake WebSocket servers.
 - **Never put infrastructure details in public repos.** Tailscale hostnames, IPs, tailnet names — none of it belongs in public issues, PRs, or commits. GitHub edit history preserves deleted content, so the only fix is deleting the entire issue.
 - **Nextcloud Docker trusted_proxies is an env-var-wins system.** The `reverse-proxy.config.php` entrypoint script unconditionally overwrites the `trusted_proxies` array from the `TRUSTED_PROXIES` env var. Any `occ config:system:set` changes are silently overridden on next container start.
 - **notify_push latency is significantly better than webhooks.** ~800ms from file upload to push notification vs ~10 seconds for the webhook job queue. Combined with peer notification for local changes, the full sync mesh now operates at 1-2 second latency in all directions.
+
+---
+
+## Session 6 — 2026-04-10: Hunting a CRLF in a haystack (#28)
+
+**Issues:** #28 (degraded sync, all syncs fail)
+**Commits:** none — fix was a single file rename outside the repo
+
+### What happened
+
+A user reported that the daemon had been running for 19 hours with `fail_count=248, sync_count=0` — every sync was failing. All four event sources were firing correctly, the webhook server was receiving events, but `nextcloudcmd` exited 1 every single time. Phone screenshots uploaded to the server were not appearing on the local sync host without a manual cron sync — and the manual cron sync was *also* failing.
+
+The investigation took longer than the fix.
+
+### The diagnostic dance
+
+First instinct was to grep the daemon journal for errors, but at INFO level the daemon only logs "starting sync" / "sync complete" / "sync failed". The actual exit code is recorded but the *reason* isn't surfaced. At DEBUG level (which the user had configured), the journal is buried under hundreds of thousands of `[ info nextcloud.sync.discovery ]` lines from nextcloudcmd's stderr — every file in the sync tree gets two lines per sync run.
+
+Second instinct was to run the daemon's exact `nextcloudcmd` invocation manually. Initially I copied the command from the cron fallback script, which uses `--silent`. That suppressed *everything* — the exit code came back as 1 with no output. Removing `--silent` and re-running gave 188k lines of output. Grepping for `error|fatal|warn` returned thousands of matches — all benign.
+
+The breakthrough came from sorting unique warning patterns. Among ~30 distinct warning shapes was one that appeared exactly once:
+
+```
+PropagateIgnoreJob ... status BlacklistedError ... "400 Bad Request" PUT
+.../<filename>%0D%0A (As-Is)v2.pdf
+```
+
+`%0D%0A` is the URL-encoding of `\r\n`. Some file in the local tree had a literal CR+LF sequence inside its filename. The Nextcloud server was rejecting the WebDAV `PUT` because that's not a valid WebDAV path. The status `BlacklistedError` rolled all the way up to the root directory propagator, which set the overall sync status to error, which made `nextcloudcmd` exit 1.
+
+`od -c` on the offending file confirmed it: literal `\r \n` bytes between "Schematic" and "(As-Is)" in the filename. Source unknown — most likely a copy-paste from a Word document or an email subject line that included a soft return.
+
+The fix was a `mv` to replace the CR+LF with a single space. nextcloudcmd then ran cleanly (exit 0), the daemon was restarted, and within two minutes the health endpoint was reporting `status: ok`, `sync_count: 9`, `fail_count: 0`.
+
+### Side discovery
+
+While investigating, I noticed something unsettling: even after the fix, the daemon's `e.logger.Info("sync complete", ...)` line in `engine.go` was *never* appearing in journalctl output, even though the health endpoint's `RecordSync` (called immediately before the log statement) was incrementing correctly. So syncs were definitely succeeding in the engine's view, but the corresponding INFO log line was missing.
+
+The most likely cause: at `level: debug`, the daemon was emitting tens of thousands of `nextcloudcmd stderr` debug lines per sync. systemd-journald has a default rate limit of 10000 messages per 30s per service, after which messages are dropped silently (no `[Suppressed N messages]` notice in the user-mode journal). The INFO lines are presumably being eaten by the same rate limiter that's eating all the chatty DEBUG output.
+
+This is a real daemon design problem — the `level: debug` config makes the daemon's own status events disappear, which is the worst possible failure mode for a debug knob. Filed as a follow-up on #28 along with three other improvements.
+
+### Lessons
+
+- **A `--silent` flag in the diagnostic cron script is the worst possible default for a fallback that's meant to be invoked when the daemon is broken.** The cron sync was both failing and silent, so it gave the user nothing to work with. If a tool is run by automation, its output should still go *somewhere*; the right pattern is `> /var/log/foo.log 2>&1`, never `--silent`.
+- **Per-file warnings in nextcloudcmd are visually identical regardless of severity.** A `BlacklistedError` looks like `Conflict` which looks like `FileIgnored`. The only line that tells you which item killed the sync is the final root-directory `slotDirDeletionJobsFinished reporting previous error` — and that scrolls off-screen quickly. The daemon should parse this out and log it.
+- **`level: debug` is too coarse a knob.** The daemon needs an intermediate level (or a separate destination for the nextcloudcmd subprocess output) so that engine-level INFO events stay visible when subprocess DEBUG is enabled. This is what `level: trace` would buy you in tracing libraries.
+- **Filenames with control characters are real and they break Nextcloud sync silently.** Should be detected and quarantined at the daemon layer — either reject the sync with a useful error, or move the offending file aside automatically. Linux filesystems will happily accept any byte sequence; WebDAV will not.
+- **When investigating a degraded service, write diagnostic output to a path *outside* the project directory.** I started writing the manual nextcloudcmd log into `~/nextcloud-sync-daemon/` (the public repo) and only realized when the user asked me to check for leaks. Moved it to `~/nsd-debug/` immediately. No leak, but a near miss — the right default is to use a quarantined scratch directory from the start.

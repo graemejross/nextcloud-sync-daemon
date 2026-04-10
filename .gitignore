@@ -4,3 +4,7 @@ prototype/config.sh
 *.test
 coverage.out
 POST-COMPACT-CONTEXT-*.md
+*.log
+nsd-*
+nextcloud-sync-daemon-*
+build/

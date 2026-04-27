@@ -47,7 +47,7 @@ ProtectHome=read-only
 # Allow writes only to the sync directory — ADJUST THIS PATH for your install.
 # Must be an existing absolute path; systemd refuses to start (status=226/NAMESPACE)
 # if the path does not exist.
-ReadWritePaths=/home/graeme/nextcloud
+ReadWritePaths=/home/USER/nextcloud
 PrivateTmp=yes
 # Hide /proc entries from other users (systemd 247+).
 # Prevents other users from seeing nextcloudcmd's command-line arguments,

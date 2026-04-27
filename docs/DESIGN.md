@@ -337,10 +337,11 @@ Wants=network-online.target
 
 [Service]
 Type=notify
+ExecStartPre=-/usr/bin/pkill -f nextcloudcmd
 ExecStart=/usr/local/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
 Restart=on-failure
 RestartSec=5
-WatchdogSec=120
+WatchdogSec=1800
 
 # Hardening
 NoNewPrivileges=yes
@@ -354,7 +355,9 @@ WantedBy=default.target
 ```
 
 - **Type=notify**: Daemon signals readiness after config is validated and all sources are started.
-- **WatchdogSec**: Daemon sends heartbeat every 60s (half the watchdog interval). systemd restarts it if heartbeats stop.
+- **WatchdogSec**: Daemon sends heartbeats every WatchdogSec/2 from an independent goroutine, so long-running syncs don't trip the watchdog. 1800s (30 min) gives ample headroom on slow servers and large trees.
+- **ExecStartPre pkill**: Belt-and-braces cleanup of any orphan `nextcloudcmd` from before kernel-level orphan prevention (`Pdeathsig=SIGKILL`) was in place. Safe to keep; it has no effect when no orphan exists.
+- **Single-instance flock**: At startup the daemon takes an exclusive flock on `/tmp/nextcloud-sync-daemon.lock`. A second instance fails fast with the holder PID — defence in depth against duplicate daemons regardless of how they were launched.
 - **ReadWritePaths**: Only the sync directory needs write access.
 
 The daemon ships an example unit file. Users create their own with the correct paths.

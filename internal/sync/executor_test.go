@@ -202,13 +202,12 @@ func TestBuildArgs(t *testing.T) {
 	cfg.Sync.ExtraArgs = []string{"--silent"}
 
 	executor := NewExecutor(cfg, quietLogger())
-	args := executor.buildArgs("my-password")
+	args := executor.buildArgs()
 
 	expected := []string{
 		"--silent",
 		"--non-interactive",
-		"-u", "alice",
-		"-p", "my-password",
+		"-n",
 		"--path", "/alice",
 		"/home/alice/nextcloud",
 		"https://cloud.example.com",
@@ -223,6 +222,13 @@ func TestBuildArgs(t *testing.T) {
 			t.Errorf("args[%d] = %q, want %q", i, arg, expected[i])
 		}
 	}
+
+	// Refs #30: no credential — and no username — may appear on argv.
+	for _, arg := range args {
+		if arg == "-p" || arg == "-u" || arg == "my-password" || arg == "alice" {
+			t.Errorf("argv leaks credential/username: found %q in %v", arg, args)
+		}
+	}
 }
 
 func TestBuildArgsNoExtras(t *testing.T) {
@@ -230,10 +236,70 @@ func TestBuildArgsNoExtras(t *testing.T) {
 	cfg.Sync.ExtraArgs = nil
 
 	executor := NewExecutor(cfg, quietLogger())
-	args := executor.buildArgs("pw")
+	args := executor.buildArgs()
 
 	if args[0] != "--non-interactive" {
 		t.Errorf("first arg = %q, want --non-interactive", args[0])
+	}
+}
+
+func TestWriteNetrc(t *testing.T) {
+	cfg := testConfig(t, "nextcloudcmd")
+	executor := NewExecutor(cfg, quietLogger())
+
+	dir, cleanup, err := executor.writeNetrc("s3cr3t-pw")
+	if err != nil {
+		t.Fatalf("writeNetrc: %v", err)
+	}
+	defer cleanup()
+
+	// Directory must be private (0700).
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if perm := di.Mode().Perm(); perm != 0o700 {
+		t.Errorf("netrc dir mode = %o, want 700", perm)
+	}
+
+	// .netrc must be 0600 and contain host/login/password.
+	path := filepath.Join(dir, ".netrc")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat .netrc: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf(".netrc mode = %o, want 600", perm)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read .netrc: %v", err)
+	}
+	want := "machine cloud.example.com login alice password s3cr3t-pw\n"
+	if string(body) != want {
+		t.Errorf(".netrc = %q, want %q", string(body), want)
+	}
+
+	// Cleanup must remove the directory.
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("temp dir still present after cleanup: %v", err)
+	}
+}
+
+func TestEnvWithHome(t *testing.T) {
+	env := envWithHome("/tmp/netrc-home")
+	var homeCount int
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "HOME=") {
+			homeCount++
+			if kv != "HOME=/tmp/netrc-home" {
+				t.Errorf("HOME = %q, want HOME=/tmp/netrc-home", kv)
+			}
+		}
+	}
+	if homeCount != 1 {
+		t.Errorf("HOME appears %d times, want exactly 1", homeCount)
 	}
 }
 

@@ -6,7 +6,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -45,13 +48,30 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 		return result, result.Error
 	}
 
-	args := e.buildArgs(password)
+	// Authenticate via a temporary netrc rather than -u/-p on the command
+	// line (Refs #30): argv is world-readable via /proc/<pid>/cmdline, so a
+	// -p password is visible to any local process for the whole sync. The
+	// netrc lives 0600 in a 0700 dir and is removed when the sync returns.
+	netrcHome, cleanup, err := e.writeNetrc(password)
+	if err != nil {
+		result.Error = fmt.Errorf("preparing netrc: %w", err)
+		result.Duration = time.Since(result.StartTime)
+		result.ExitCode = -1
+		return result, result.Error
+	}
+	defer cleanup()
+
+	args := e.buildArgs()
 
 	timeout := e.cfg.Sync.Timeout.Duration
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, e.cfg.Sync.NextcloudCmd, args...)
+
+	// Point HOME at the temp netrc dir so `nextcloudcmd -n` reads our
+	// credentials there, not the daemon user's real ~/.netrc.
+	cmd.Env = envWithHome(netrcHome)
 
 	// Kernel-level orphan prevention (Refs #27):
 	//   Pdeathsig: SIGKILL — Linux kernel sends SIGKILL to this child if the
@@ -118,19 +138,69 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 	return result, nil
 }
 
-// buildArgs constructs the nextcloudcmd argument list.
-func (e *Executor) buildArgs(password string) []string {
+// buildArgs constructs the nextcloudcmd argument list. Credentials are NOT
+// passed here — `-n` makes nextcloudcmd read them from the netrc under the
+// HOME we set on the command's environment (Refs #30). Nothing secret, and
+// no username, reaches argv.
+func (e *Executor) buildArgs() []string {
 	var args []string
 
 	args = append(args, e.cfg.Sync.ExtraArgs...)
 	args = append(args, "--non-interactive")
-	args = append(args, "-u", e.cfg.Server.Username)
-	args = append(args, "-p", password)
+	args = append(args, "-n")
 	args = append(args, "--path", e.cfg.Sync.RemotePath)
 	args = append(args, e.cfg.Sync.LocalDir)
 	args = append(args, e.cfg.Server.URL)
 
 	return args
+}
+
+// writeNetrc creates a temporary directory (0700) holding a .netrc (0600)
+// with the server credentials, for `nextcloudcmd -n`. Returns the directory
+// to use as HOME and a cleanup func the caller must defer. Keeping the
+// password in a private file instead of on argv is the whole point of #30.
+func (e *Executor) writeNetrc(password string) (string, func(), error) {
+	u, err := url.Parse(e.cfg.Server.URL)
+	if err != nil {
+		return "", nil, fmt.Errorf("parsing server URL %q: %w", e.cfg.Server.URL, err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", nil, fmt.Errorf("server URL %q has no host", e.cfg.Server.URL)
+	}
+
+	dir, err := os.MkdirTemp("", "nsd-netrc-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating netrc temp dir: %w", err)
+	}
+	cleanup := func() {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			e.logger.Warn("failed to remove netrc temp dir", "dir", dir, "error", rmErr)
+		}
+	}
+
+	// machine line matches the server host; nextcloudcmd looks up login/password by host.
+	content := fmt.Sprintf("machine %s login %s password %s\n", host, e.cfg.Server.Username, password)
+	if err := os.WriteFile(filepath.Join(dir, ".netrc"), []byte(content), 0o600); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("writing netrc: %w", err)
+	}
+
+	return dir, cleanup, nil
+}
+
+// envWithHome returns the current environment with HOME replaced by the given
+// path, so a child process reads netrc/config from there.
+func envWithHome(home string) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+home)
 }
 
 // CheckNextcloudCmd verifies that nextcloudcmd is available.

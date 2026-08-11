@@ -14,6 +14,7 @@ import (
 	"time"
 
 	sdnotify "github.com/coreos/go-systemd/v22/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/appauth"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/config"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/engine"
@@ -42,6 +43,8 @@ func run() int {
 		test        bool
 		initEnable  bool
 		initDisable bool
+		getAppPass  bool
+		serverURL   string
 	)
 
 	flag.StringVar(&configPath, "config", "", "path to config file")
@@ -51,6 +54,8 @@ func run() int {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&initEnable, "init-enable", false, "register and start the daemon as a systemd service (system scope as root, user scope otherwise) and exit")
 	flag.BoolVar(&initDisable, "init-disable", false, "stop and remove the systemd service registration created by --init-enable and exit")
+	flag.BoolVar(&getAppPass, "get-app-password", false, "obtain a Nextcloud app password via Login Flow v2 (browser on any device) and exit")
+	flag.StringVar(&serverURL, "server", "", "Nextcloud server URL for --get-app-password (default: server.url from config)")
 	flag.Parse()
 
 	if showVersion {
@@ -65,6 +70,13 @@ func run() int {
 			return 1
 		}
 		return 0
+	}
+
+	// --get-app-password runs before config validation: it exists precisely
+	// for first-run setups where no valid config exists yet. --server wins;
+	// otherwise the server URL is read from the config if one resolves.
+	if getAppPass {
+		return runGetAppPassword(serverURL, configPath)
 	}
 
 	// Find config file
@@ -286,6 +298,52 @@ func run() int {
 
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 	logger.Info("daemon stopped")
+	return 0
+}
+
+// runGetAppPassword drives Login Flow v2 (Refs #37). Everything
+// informational goes to stderr; stdout carries only the app password, so
+// the output can be redirected straight into a password file:
+//
+//	nextcloud-sync-daemon --get-app-password > password && chmod 600 password
+func runGetAppPassword(serverURL, configPath string) int {
+	if serverURL == "" {
+		// Best-effort config read — the config may be absent (first run) or
+		// invalid (sync dir not created yet); only server.url is needed.
+		if cfgPath, err := config.FindConfigPath(configPath); err == nil {
+			if cfg, err := config.Load(cfgPath); err == nil {
+				serverURL = cfg.Server.URL
+			}
+		}
+	}
+	if serverURL == "" {
+		fmt.Fprintln(os.Stderr, "error: no server URL — pass --server https://cloud.example.com or configure server.url")
+		return 1
+	}
+
+	ctx, stop := makeContext()
+	defer stop()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	ua := "nextcloud-sync-daemon/" + version
+
+	flow, err := appauth.Start(ctx, client, serverURL, ua)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(os.Stderr, "Open this URL in a browser on any device and log in:\n\n    %s\n\n", flow.LoginURL)
+	fmt.Fprintln(os.Stderr, "Waiting for approval (valid 20 minutes, Ctrl-C to abort)...")
+
+	creds, err := flow.Poll(ctx, client, 5*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(os.Stderr, "Approved as %s. The app password (below on stdout) is shown once — store it in your password_file with mode 600.\n", creds.LoginName)
+	fmt.Println(creds.AppPassword)
 	return 0
 }
 

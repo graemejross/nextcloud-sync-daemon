@@ -100,6 +100,17 @@ poll:
 
 Use a [Nextcloud app password](https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#manage-connected-browsers-and-devices) rather than the main account password.
 
+The daemon can obtain one for you without a browser on this machine, using the same [Login Flow v2](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/) as the desktop client. It prints a URL; open it in a browser on any device (your phone works), log in, approve — the CLI picks up the generated app password and prints it to stdout, everything else to stderr:
+
+```bash
+sudo mkdir -p /etc/nextcloud-sync-daemon
+nextcloud-sync-daemon --get-app-password --server https://cloud.example.com \
+  | sudo tee /etc/nextcloud-sync-daemon/password > /dev/null
+sudo chmod 600 /etc/nextcloud-sync-daemon/password
+```
+
+(`--server` can be omitted once `server.url` is configured.) This works with two-factor accounts, since the login happens in the browser. Or create the app password manually in the Nextcloud web UI and write the file yourself:
+
 ```bash
 sudo mkdir -p /etc/nextcloud-sync-daemon
 echo "your-app-password" | sudo tee /etc/nextcloud-sync-daemon/password > /dev/null

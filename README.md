@@ -21,6 +21,27 @@ Event-driven sync daemon for headless Nextcloud servers. Wraps `nextcloudcmd` wi
 
 ## Installation
 
+### Debian / Ubuntu package
+
+`.deb` packages for amd64 and arm64 are available from [GitHub Releases](https://github.com/graemejross/nextcloud-sync-daemon/releases):
+
+```bash
+sudo apt install ./nextcloud-sync-daemon_*.deb
+```
+
+The package installs the binary to `/usr/bin`, an example config to `/etc/nextcloud-sync-daemon/config.yaml.example`, and a systemd unit (not enabled). First run:
+
+```bash
+sudo cp /etc/nextcloud-sync-daemon/config.yaml.example /etc/nextcloud-sync-daemon/config.yaml
+sudo nano /etc/nextcloud-sync-daemon/config.yaml   # set server, credentials, local_dir
+sudo systemctl edit nextcloud-sync-daemon          # add: [Service] ReadWritePaths=/path/to/sync-dir
+sudo systemctl enable --now nextcloud-sync-daemon
+```
+
+The `ReadWritePaths` drop-in is required because the unit runs with `ProtectSystem=strict`; without it the daemon exits at startup reporting the sync directory is not writable.
+
+The package depends on `nextcloud-desktop-cmd`, which provides `nextcloudcmd`.
+
 ### Download
 
 Pre-built binaries for `linux/amd64` and `linux/arm64` are available from [GitHub Releases](https://github.com/graemejross/nextcloud-sync-daemon/releases).

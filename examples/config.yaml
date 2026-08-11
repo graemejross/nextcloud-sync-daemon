@@ -19,12 +19,11 @@ server:
   #   chmod 600 /etc/nextcloud-sync-daemon/password
   # The daemon warns at startup if the file is readable by group/others.
   #
-  # NOTE: The password is passed as a command-line argument to nextcloudcmd,
-  # which means it is visible via 'ps' to other users on the system.
-  # Mitigations:
+  # The daemon passes credentials to nextcloudcmd via a temporary 0600 .netrc,
+  # not on the command line, so the password does not appear in the process
+  # list (since v0.4.0). Still recommended:
   #   - Use a Nextcloud app password (limited scope) instead of the main password
   #   - Run the daemon as a dedicated user
-  #   - Use ProtectProc=invisible in the systemd unit (hides /proc from other users)
 
 sync:
   # Local directory to sync (required)

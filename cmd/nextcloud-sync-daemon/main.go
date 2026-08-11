@@ -21,6 +21,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/notifypush"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/peer"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/svcinit"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/webhook"
@@ -39,6 +40,8 @@ func run() int {
 		validate    bool
 		showVersion bool
 		test        bool
+		initEnable  bool
+		initDisable bool
 	)
 
 	flag.StringVar(&configPath, "config", "", "path to config file")
@@ -46,10 +49,21 @@ func run() int {
 	flag.BoolVar(&test, "test", false, "write a marker file, sync, report latency, clean up, and exit")
 	flag.BoolVar(&validate, "validate", false, "validate config and exit")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&initEnable, "init-enable", false, "register and start the daemon as a systemd service (system scope as root, user scope otherwise) and exit")
+	flag.BoolVar(&initDisable, "init-disable", false, "stop and remove the systemd service registration created by --init-enable and exit")
 	flag.Parse()
 
 	if showVersion {
 		fmt.Printf("nextcloud-sync-daemon %s\n", version)
+		return 0
+	}
+
+	// --init-disable needs no config — it only undoes a prior --init-enable.
+	if initDisable {
+		if err := svcinit.Disable(svcinit.CurrentScope(), userHomeOrDie(), svcinit.ExecRunner{}, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -69,6 +83,34 @@ func run() int {
 
 	if validate {
 		fmt.Printf("config %s is valid\n", cfgPath)
+		return 0
+	}
+
+	// --init-enable requires a valid config (loaded above) so we never
+	// register a service that fails at startup. The unit embeds the
+	// resolved binary and config paths, and grants write access to the
+	// configured sync directory.
+	if initEnable {
+		binPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: resolving own binary path: %v\n", err)
+			return 1
+		}
+		absCfg, err := filepath.Abs(cfgPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: resolving config path: %v\n", err)
+			return 1
+		}
+		opts := svcinit.Options{
+			Scope:      svcinit.CurrentScope(),
+			BinaryPath: binPath,
+			ConfigPath: absCfg,
+			LocalDir:   cfg.Sync.LocalDir,
+		}
+		if err := svcinit.Enable(opts, userHomeOrDie(), svcinit.ExecRunner{}, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -245,6 +287,18 @@ func run() int {
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 	logger.Info("daemon stopped")
 	return 0
+}
+
+// userHomeOrDie returns the home directory, exiting on failure — callers
+// only need it for the user-scope unit path, and without a home there is
+// no user scope to manage.
+func userHomeOrDie() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: resolving home directory: %v\n", err)
+		os.Exit(1)
+	}
+	return home
 }
 
 func setupLogging(cfg *config.Config) *slog.Logger {

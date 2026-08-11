@@ -137,9 +137,26 @@ Without `--once`, the daemon runs continuously, syncing on events from enabled s
 
 ## Running as a systemd service
 
+### `--init-enable` (recommended)
+
+With a valid config in place, the daemon can register itself:
+
+```bash
+nextcloud-sync-daemon --init-enable          # user scope
+sudo nextcloud-sync-daemon --init-enable     # system scope (run as root)
+```
+
+Run as root it writes a system unit to `/etc/systemd/system/` and runs `systemctl enable --now`; run as a normal user it writes a user unit to `~/.config/systemd/user/` and enables it with `systemctl --user`. The generated unit embeds the paths to the binary and the config file it was invoked with, and (system scope) grants write access to the configured sync directory, so no editing is needed. It validates the config first and refuses to overwrite an existing unit.
+
+`--init-disable` stops the service and removes the unit — but only one that `--init-enable` wrote; it will not touch a unit installed by hand or by the `.deb` package.
+
+For user scope, enable lingering so the service starts at boot without a login: `loginctl enable-linger $USER`.
+
+### Manual setup
+
 An example unit file is provided at [`examples/nextcloud-sync-daemon.service`](examples/nextcloud-sync-daemon.service).
 
-### System-wide service
+#### System-wide service
 
 ```bash
 sudo cp nextcloud-sync-daemon.service /etc/systemd/system/
@@ -147,7 +164,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nextcloud-sync-daemon
 ```
 
-### User service (no root required)
+#### User service (no root required)
 
 ```bash
 mkdir -p ~/.config/systemd/user

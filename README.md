@@ -200,6 +200,23 @@ journalctl --user -u nextcloud-sync-daemon -f
 curl http://127.0.0.1:8768/
 ```
 
+## Server-side setup script
+
+The two sections below describe the server-side setup manually. [`contrib/nextcloud-server-setup.sh`](contrib/nextcloud-server-setup.sh) automates them — run it on the Nextcloud server (not the sync client):
+
+```bash
+# notify_push: install the app and run its self-test
+sudo ./nextcloud-server-setup.sh notify-push --push-url https://cloud.example.com/push
+
+# webhooks: enable the app and register the four file events
+sudo ./nextcloud-server-setup.sh webhook \
+    --nextcloud-url https://cloud.example.com --admin admin \
+    --daemon-url http://DAEMON_HOST:8767/ --sync-user sync-user \
+    --secret "your-webhook-secret"
+```
+
+`--dry-run` prints what would be executed. The admin password is read from `$NC_ADMIN_PASS` or prompted for — never passed on a command line. Override the `occ` invocation with `--occ` if your installation differs from `/var/www/nextcloud`.
+
 ## notify_push setup (recommended for server-side events)
 
 [notify_push](https://github.com/nextcloud/notify_push) is the recommended way to receive server-side file change events. It uses an outbound WebSocket connection — no inbound ports needed, works behind NAT and firewalls.

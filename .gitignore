@@ -8,3 +8,4 @@ POST-COMPACT-CONTEXT-*.md
 nsd-*
 nextcloud-sync-daemon-*
 build/
+dist/

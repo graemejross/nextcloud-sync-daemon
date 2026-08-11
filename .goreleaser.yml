@@ -13,7 +13,33 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
 
 changelog:
   sort: asc
+
+nfpms:
+  - package_name: nextcloud-sync-daemon
+    vendor: Graeme Ross
+    homepage: https://github.com/graemejross/nextcloud-sync-daemon
+    maintainer: Graeme Ross <graeme@graemejross.com>
+    description: |-
+      Event-driven sync daemon for headless Nextcloud clients.
+      Wraps nextcloudcmd with filesystem watching, notify_push WebSocket,
+      webhook and polling triggers, peer notification and a health endpoint.
+    license: MIT
+    section: net
+    formats:
+      - deb
+    bindir: /usr/bin
+    dependencies:
+      - nextcloud-desktop-cmd
+    contents:
+      - src: examples/config.yaml
+        dst: /etc/nextcloud-sync-daemon/config.yaml.example
+      - src: packaging/nextcloud-sync-daemon.service
+        dst: /usr/lib/systemd/system/nextcloud-sync-daemon.service
+      - src: examples/nextcloud-sync-daemon.service
+        dst: /usr/share/doc/nextcloud-sync-daemon/examples/nextcloud-sync-daemon.service
+      - src: README.md
+        dst: /usr/share/doc/nextcloud-sync-daemon/README.md

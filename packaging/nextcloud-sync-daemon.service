@@ -1,0 +1,52 @@
+# System-scope systemd unit shipped in the .deb package.
+# The example unit in examples/ documents both system and user scope;
+# this one is fixed to the packaged paths (/usr/bin, /etc).
+#
+# Before enabling:
+#   1. cp /etc/nextcloud-sync-daemon/config.yaml.example /etc/nextcloud-sync-daemon/config.yaml
+#      and edit it for your server.
+#   2. Grant the daemon write access to your sync directory with a drop-in:
+#        systemctl edit nextcloud-sync-daemon
+#      and add:
+#        [Service]
+#        ReadWritePaths=/path/to/your/sync-dir
+#      Without this, ProtectSystem=strict leaves the filesystem read-only and
+#      the daemon exits at startup with a "local_dir not writable" config error.
+#   3. systemctl enable --now nextcloud-sync-daemon
+
+[Unit]
+Description=Nextcloud Sync Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify: daemon signals readiness after config validation and source startup
+Type=notify
+
+# Belt-and-braces: kill any orphan nextcloudcmd before starting (Refs #27).
+# The daemon's Pdeathsig handles orphans at the kernel level, but if a user
+# manually started nextcloudcmd outside the daemon this catches it too.
+ExecStartPre=-/usr/bin/pkill -f nextcloudcmd
+
+ExecStart=/usr/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
+
+# Restart on failure with 5-second delay
+Restart=on-failure
+RestartSec=5
+
+# Watchdog: daemon sends heartbeats every WatchdogSec/2 from a goroutine that
+# runs independently of sync work, so a slow sync does not miss its window.
+WatchdogSec=1800
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+# Hide /proc entries from other users (systemd 247+). Defence in depth:
+# since v0.4.0 credentials are passed via .netrc, not the command line,
+# but this also hides paths and server URL from other users.
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

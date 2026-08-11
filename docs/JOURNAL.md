@@ -685,3 +685,39 @@ This is a real daemon design problem — the `level: debug` config makes the dae
 - **`level: debug` is too coarse a knob.** The daemon needs an intermediate level (or a separate destination for the nextcloudcmd subprocess output) so that engine-level INFO events stay visible when subprocess DEBUG is enabled. This is what `level: trace` would buy you in tracing libraries.
 - **Filenames with control characters are real and they break Nextcloud sync silently.** Should be detected and quarantined at the daemon layer — either reject the sync with a useful error, or move the offending file aside automatically. Linux filesystems will happily accept any byte sequence; WebDAV will not.
 - **When investigating a degraded service, write diagnostic output to a path *outside* the project directory.** I started writing the manual nextcloudcmd log into `~/nextcloud-sync-daemon/` (the public repo) and only realized when the user asked me to check for leaks. Moved it to `~/nsd-debug/` immediately. No leak, but a near miss — the right default is to use a quarantined scratch directory from the start.
+
+---
+
+## Session 7 — 2026-08-11: Maintainership night — three releases, four community issues
+
+**Issues:** #34, #35, #37, #38 (closed), #36 (scoped)
+**Commits:** `d6128a5`, `b574288`, `64eb6c8`; tags `v0.4.0`, `v0.4.1`, `v0.5.0`
+
+### What happened
+
+The session opened on a finding that had sat unnoticed for two months: the #30 security fix (password moved off `nextcloudcmd`'s argv into a `.netrc`, merged 13 June) had never been released. The latest GitHub release was still v0.3.2 from 17 March, so anyone installing from Releases got a binary that put their Nextcloud password in the process list. Meanwhile four feature requests from an external contributor, filed two days earlier, sat unanswered.
+
+Three releases later, all of that is closed:
+
+- **v0.4.0** — the overdue security release. Same code as main; the release's own notes lead with the upgrade recommendation. No new code, just a tag that should have existed in June.
+- **v0.4.1** — `.deb` packages (#34). goreleaser's `nfpms` turns the existing amd64/arm64 builds into Debian packages on every tag push. Debian policy shaped the layout: `/usr/bin`, not the requested `/opt` + `/usr/local/bin` symlink, and no `golang` runtime dependency since the binary is static. The packaged systemd unit ships disabled with `ProtectSystem=strict`; its header documents the `ReadWritePaths` drop-in a user must add.
+- **v0.5.0** — onboarding features. `--init-enable`/`--init-disable` (#35): the daemon writes its own systemd unit (system scope as root, user scope otherwise), embedding the resolved binary/config paths and, in system scope, `ReadWritePaths` from the validated config — the thing the .deb unit cannot know. It refuses to overwrite an existing unit, and disable removes only a unit carrying its own marker comment. `--get-app-password` (#37): Login Flow v2, the desktop client's flow — print the login URL, user approves in a browser on any device, poll until the server releases the credentials, app password to stdout for piping into a password file. Works with 2FA, no browser on the daemon host.
+
+#36 (server-side notify_push/webhook enablement) was deliberately scoped down rather than implemented: the enablement is an `occ` operation on the Nextcloud host, which is usually not the daemon host, and a client binary that runs as root against a server installation directory is a trust surface out of proportion to a run-once step. Offer on the issue: a documented setup guide plus a `contrib/` script run on the server as the web user.
+
+### Key decisions
+
+- **v0.4.0, not v0.3.3.** The netrc change requires a `nextcloudcmd` supporting `-n` and sets `HOME` for the child — behavioural, not a patch.
+- **Answer external issues the same day, with positions.** All four got substantive replies before any code was written. The four requests share a theme worth naming: everything hard about this daemon is installation and first run, not operation. That theme set the work order.
+- **The generated unit differs by scope.** The user-scope unit omits the sandboxing directives: several need privileges or unprivileged user namespaces that user managers don't uniformly have, and `ProtectHome` would block the common case of syncing under `$HOME`.
+- **stdout discipline for `--get-app-password`.** Only the credential goes to stdout; all narration to stderr. The output is designed to be redirected, so nothing else may be in it.
+
+### Verification pattern
+
+Each feature was exercised end-to-end against the real binary before merge, not just unit-tested: `--init-enable` with an isolated `HOME` and a stub `systemctl` on `PATH` (unit written with correct paths, right systemctl argument sequences, second enable refused, disable converged); `--get-app-password` against a local fake implementing both Login Flow v2 endpoints (404-until-approved, then stdout carrying exactly the password). Published assets were verified after each release: checksum against the checksums file, binary runs, new flags present.
+
+### Lessons
+
+- **A merged fix is not a shipped fix.** The #30 fix was on main, deployed to most production hosts, and still reaching no external user for two months because nobody cut a tag. A release is part of the fix, not an afterthought.
+- **Same-day answers cost little and buy goodwill.** Three of the contributor's four requests shipped within three days of filing; the fourth got a reasoned scope proposal. None of that required heroics — the .deb was one goreleaser stanza on top of existing builds.
+- **Packaging requests hide policy questions.** The issue asked for `/opt` + a symlink; Debian policy forbids packages touching `/usr/local`. Reading the policy before implementing avoided shipping a package that would need re-laying-out later.

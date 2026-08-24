@@ -20,6 +20,8 @@ type Status struct {
 	sources             map[string]bool
 	triggerCounts       map[string]int64
 	lastWebhookReceived *time.Time
+	invalidNames        []string
+	invalidNameCount    int
 }
 
 // NewStatus creates a Status with the current time as the start time.
@@ -43,6 +45,32 @@ func (s *Status) RecordSync(result *daemon.SyncResult) {
 		s.failCount++
 	} else {
 		s.syncCount++
+	}
+}
+
+// SetInvalidNames records the result of a scan for filenames the server will
+// reject (Refs #45). Paths are already escaped for display.
+func (s *Status) SetInvalidNames(paths []string, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invalidNames = append([]string(nil), paths...)
+	s.invalidNameCount = total
+}
+
+// AddInvalidName records one further offending path, for names that appear
+// after the startup scan. Repeats are ignored so a file touched repeatedly is
+// counted once.
+func (s *Status) AddInvalidName(path string, max int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.invalidNames {
+		if existing == path {
+			return
+		}
+	}
+	s.invalidNameCount++
+	if len(s.invalidNames) < max {
+		s.invalidNames = append(s.invalidNames, path)
 	}
 }
 
@@ -79,6 +107,11 @@ type response struct {
 	LastFailReason *string `json:"last_fail_reason,omitempty"`
 	LastFailPath   *string `json:"last_fail_path,omitempty"`
 	LastFailDetail *string `json:"last_fail_detail,omitempty"`
+
+	// Local filenames the server will refuse (Refs #45). Present only when the
+	// daemon has found some; InvalidNames is capped, InvalidNameCount is not.
+	InvalidNameCount int      `json:"invalid_name_count,omitempty"`
+	InvalidNames     []string `json:"invalid_names,omitempty"`
 }
 
 // Handler returns an http.HandlerFunc that serves the health check JSON response.
@@ -118,6 +151,11 @@ func (s *Status) Handler() http.HandlerFunc {
 			if s.lastSync.FailDetail != "" {
 				resp.LastFailDetail = &s.lastSync.FailDetail
 			}
+		}
+
+		if s.invalidNameCount > 0 {
+			resp.InvalidNameCount = s.invalidNameCount
+			resp.InvalidNames = append([]string(nil), s.invalidNames...)
 		}
 
 		if s.lastWebhookReceived != nil {

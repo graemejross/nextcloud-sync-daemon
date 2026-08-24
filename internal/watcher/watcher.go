@@ -14,6 +14,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/health"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/scan"
 )
 
 // Watcher monitors a directory tree for filesystem changes and sends
@@ -23,10 +25,18 @@ type Watcher struct {
 	debounce time.Duration
 	excludes []*regexp.Regexp
 	logger   *slog.Logger
+
+	// health is optional; when set, filenames the server will reject are
+	// reported to it as they appear (Refs #45).
+	health *health.Status
+	// warned remembers which of those paths have already been logged, so a
+	// file that is written repeatedly produces one warning, not one per event.
+	warned map[string]bool
 }
 
 // New creates a Watcher for the given directory with compiled exclude patterns.
-func New(dir string, debounce time.Duration, excludePatterns []string, logger *slog.Logger) (*Watcher, error) {
+// The health parameter is optional (may be nil).
+func New(dir string, debounce time.Duration, excludePatterns []string, logger *slog.Logger, healthStatus *health.Status) (*Watcher, error) {
 	var excludes []*regexp.Regexp
 	for _, pattern := range excludePatterns {
 		re, err := regexp.Compile(pattern)
@@ -41,6 +51,8 @@ func New(dir string, debounce time.Duration, excludePatterns []string, logger *s
 		debounce: debounce,
 		excludes: excludes,
 		logger:   logger,
+		health:   healthStatus,
+		warned:   make(map[string]bool),
 	}, nil
 }
 
@@ -92,6 +104,8 @@ func (w *Watcher) Start(ctx context.Context, trigger chan<- daemon.Event) error 
 				"path", relPath,
 			)
 
+			w.checkName(relPath)
+
 			// Watch new directories recursively
 			if event.Op.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
@@ -141,6 +155,31 @@ func (w *Watcher) Start(ctx context.Context, trigger chan<- daemon.Event) error 
 			debounceTimer = nil
 			debounceC = nil
 		}
+	}
+}
+
+// maxReportedNames caps how many rejected filenames the watcher reports to the
+// health endpoint. The count is not capped.
+const maxReportedNames = 50
+
+// checkName warns once about a path the server will reject. Naming the file is
+// the whole point: in #28 a single CR+LF filename failed every sync for days,
+// and the daemon's own output never said which file it was.
+func (w *Watcher) checkName(relPath string) {
+	if !scan.HasControlChars(relPath) {
+		return
+	}
+	escaped := scan.Escape(relPath)
+	if w.warned[escaped] {
+		return
+	}
+	w.warned[escaped] = true
+
+	w.logger.Warn("filename contains control characters — the server will reject it and every sync will fail until it is renamed",
+		"path", escaped,
+	)
+	if w.health != nil {
+		w.health.AddInvalidName(escaped, maxReportedNames)
 	}
 }
 

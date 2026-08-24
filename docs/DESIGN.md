@@ -316,6 +316,16 @@ health:
   listen: 127.0.0.1:8768          # localhost only by default
 ```
 
+The daemon also reports local filenames the server cannot accept (#45). A name
+holding a C0 control character or DEL has no valid WebDAV path, so the server
+rejects the PUT and the client fails the entire sync; #28 was 248 consecutive
+failures caused by one CR+LF filename. `internal/scan` walks the tree at startup
+and the watcher checks each path it sees, warning once per name and recording it
+under `invalid_name_count` / `invalid_names` on the health endpoint. A directory
+whose own name is unusable is reported once rather than every file beneath it.
+Nothing is renamed or moved: the daemon names the file and leaves the decision
+to the operator.
+
 `logging.subprocess` decides what happens to `nextcloudcmd`'s stdout and stderr
 (#46). It used to follow `logging.level`, which made `debug` counterproductive:
 a single sync emits tens of thousands of client lines, journald drops messages

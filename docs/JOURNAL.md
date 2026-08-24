@@ -721,3 +721,40 @@ Each feature was exercised end-to-end against the real binary before merge, not 
 - **A merged fix is not a shipped fix.** The #30 fix was on main, deployed to most production hosts, and still reaching no external user for two months because nobody cut a tag. A release is part of the fix, not an afterthought.
 - **Same-day answers cost little and buy goodwill.** Three of the contributor's four requests shipped within three days of filing; the fourth got a reasoned scope proposal. None of that required heroics — the .deb was one goreleaser stanza on top of existing builds.
 - **Packaging requests hide policy questions.** The issue asked for `/opt` + a symlink; Debian policy forbids packages touching `/usr/local`. Reading the policy before implementing avoided shipping a package that would need re-laying-out later.
+
+---
+
+## Session 8 — 2026-08-24: Clearing the #28 follow-up backlog
+
+**Issues:** #44, #45, #46, #47 (all closed)
+**PRs:** #49, #50, #51, #52
+
+### What happened
+
+The four issues filed after the #28 investigation had sat untouched for a fortnight. All four came from the same failure and all four were about the same thing: the daemon knew what was wrong and never said so. They shipped in one run, one PR each.
+
+**#44 — surface the failing item.** A failed sync logged the exit code and nothing else, so diagnosing one meant re-running `nextcloudcmd` by hand. The answer was already in the stderr the daemon captures: the propagator's terminal line names the item, its `SyncFileItem::Status` and the server's error. `internal/sync/failure.go` parses it and the executor records `fail_reason`, `fail_path` and `fail_detail` on the result, in the log and on the health endpoint.
+
+**#46 — debug logging that hid the daemon.** At `level: debug` every client line went to the journal, journald dropped messages past its rate limit without saying so, and the daemon's own events went with them. Subprocess output now has its own destination, `logging.subprocess: off | log | file`, independent of the daemon's level. `off` is the new default: after #44 the diagnostic value of the flood is available without the flood.
+
+**#45 — filenames the server will reject.** `internal/scan` walks the tree at startup and the watcher checks each path it sees, warning once per name and reporting them as `invalid_name_count` / `invalid_names`. Names are escaped before printing, which is the whole point: the CR+LF filename behind #28 would otherwise split the log line reporting it.
+
+**#47 — conflicted copies.** The same walk counts them, matching the current client format, its username variant, and the legacy ownCloud form. `conflict_file_count` is exact; `conflict_files` lists the newest ten with modification times, so an old conflict reads differently from this morning's.
+
+### Key decisions
+
+- **Report, do not act.** Nothing renames, moves or deletes a file. Quarantining a badly-named file or clearing an old conflict is a decision that needs a human; the daemon's job was to say which file and stop there.
+- **`subprocess: off` as the default.** It changes behaviour for anyone running `level: debug` today. That is the fix, not a side effect: the flood was costing more than it bought, and #44 replaced its main use.
+- **Only control characters count as unusable names.** Backslash and colon depend on the server's own configuration, so the daemon does not judge them.
+- **Formats checked, not remembered.** The status tokens came from the installed `libnextcloudsync` rather than from memory, and the conflict-file patterns from real client-generated names. Two of the three formats would have been wrong from recall alone.
+
+### Verification pattern
+
+Every change was exercised against a running daemon before merge, not only unit-tested: a stub `nextcloudcmd` emitting real 3.11 propagator lines for #44; a 5,000-line-per-sync stub across all three modes for #46, comparing journal volume and whether `sync complete` survived; a tree holding a real CR+LF filename for #45; a tree holding all three conflict formats with different ages for #47. Running a second daemon on a host that already runs one needs `TMPDIR` pointed elsewhere, since the single-instance lock (#27) lives under `os.TempDir()`.
+
+### Lessons
+
+- **Write the test before trusting the parser.** The first version of the #44 parser matched the propagator's line shape without checking the status, and blamed a `Conflict` file for a sync a `BlacklistedError` had killed. The test caught it immediately; reading the code again would not have.
+- **A cap on what you display is not a cap on what you count.** Health deduplicated new findings against the fifty paths it was showing, so a file beyond that cap could be counted twice. Found while building #47 on top of #45, fixed in #45 before it merged.
+- **State that arrives later must obey the same ordering as state that arrived first.** The conflict list was sorted newest-first by the startup scan, then runtime additions appended to the end. The end-to-end run showed it; the unit tests, which only exercised one path at a time, did not.
+- **A debug knob that hides the daemon's own events is worse than no debug knob.** It fails exactly when someone has already decided something is wrong.

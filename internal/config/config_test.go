@@ -136,6 +136,7 @@ poll:
 		{"poll.interval", cfg.Poll.Interval.Duration, 60 * time.Second},
 		{"logging.level", cfg.Logging.Level, "info"},
 		{"logging.format", cfg.Logging.Format, "text"},
+		{"logging.subprocess", cfg.Logging.Subprocess, "off"},
 		{"health.listen", cfg.Health.Listen, "127.0.0.1:8768"},
 	}
 
@@ -250,6 +251,22 @@ sync: {local_dir: /tmp}
 poll: {enabled: true}
 logging: {format: xml}`,
 			"logging.format",
+		},
+		{
+			"invalid subprocess destination",
+			`server: {url: "https://x.com", username: a, password: b}
+sync: {local_dir: /tmp}
+poll: {enabled: true}
+logging: {subprocess: journal}`,
+			"logging.subprocess",
+		},
+		{
+			"subprocess file without a path",
+			`server: {url: "https://x.com", username: a, password: b}
+sync: {local_dir: /tmp}
+poll: {enabled: true}
+logging: {subprocess: file}`,
+			"logging.subprocess_file",
 		},
 	}
 

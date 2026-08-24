@@ -309,11 +309,20 @@ poll:
 logging:
   level: info
   format: text
+  subprocess: off                 # off | log | file — nextcloudcmd's own output
 
 health:
   enabled: true
   listen: 127.0.0.1:8768          # localhost only by default
 ```
+
+`logging.subprocess` decides what happens to `nextcloudcmd`'s stdout and stderr
+(#46). It used to follow `logging.level`, which made `debug` counterproductive:
+a single sync emits tens of thousands of client lines, journald drops messages
+past its rate limit without recording that it did, and the daemon's own INFO
+events disappeared along with the noise. `off` discards the output, `log` emits
+it at debug capped at 200 lines per sync, and `file` appends it to
+`logging.subprocess_file` so the journal carries daemon events only.
 
 Validation rules:
 - `server.url` required, must be valid URL

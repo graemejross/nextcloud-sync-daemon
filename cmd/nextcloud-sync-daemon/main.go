@@ -138,6 +138,15 @@ func run() int {
 		logger.Warn("health endpoint is accessible from the network — it exposes sync status information", "listen", cfg.Health.Listen)
 	}
 
+	// Under systemd, journald drops messages past its rate limit and reports
+	// nothing in the user journal, so subprocess output can take the daemon's
+	// own events with it (Refs #46). Say so at startup rather than leaving the
+	// reader to work out why "sync complete" stopped appearing.
+	if cfg.Logging.Subprocess == "log" {
+		logger.Warn("logging nextcloudcmd output to the journal — journald rate limiting may drop the daemon's own events; raise LogRateLimitBurst for this unit, or use logging.subprocess: file",
+			"cap_per_sync", sync.MaxLoggedSubprocessLines)
+	}
+
 	// Check nextcloudcmd exists
 	if err := sync.CheckNextcloudCmd(cfg.Sync.NextcloudCmd); err != nil {
 		logger.Error("nextcloudcmd not available", "error", err)

@@ -99,16 +99,7 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 	err = cmd.Run()
 	result.Duration = time.Since(result.StartTime)
 
-	if stdout.Len() > 0 {
-		for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
-			e.logger.Debug("nextcloudcmd stdout", "line", line)
-		}
-	}
-	if stderr.Len() > 0 {
-		for _, line := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
-			e.logger.Debug("nextcloudcmd stderr", "line", line)
-		}
-	}
+	e.recordSubprocessOutput(stdout.String(), stderr.String())
 
 	if err != nil {
 		if cmdCtx.Err() == context.DeadlineExceeded {
@@ -233,4 +224,81 @@ func CheckNextcloudCmd(path string) error {
 		return fmt.Errorf("nextcloudcmd not found at %q: %w", path, err)
 	}
 	return nil
+}
+
+// MaxLoggedSubprocessLines caps how many nextcloudcmd lines reach the logger in
+// one sync when logging.subprocess is "log" (Refs #46).
+//
+// systemd-journald drops messages past its rate limit (10,000 per 30s per
+// service by default) and says nothing about it in the user journal, so an
+// uncapped dump does not merely add noise: it silently takes the daemon's own
+// INFO and ERROR events down with it. The cap keeps a sample of the output and
+// the daemon's own events both readable.
+const MaxLoggedSubprocessLines = 200
+
+// recordSubprocessOutput routes nextcloudcmd's stdout and stderr according to
+// logging.subprocess. It never fails a sync: a destination that cannot be
+// written is reported once and the sync result stands.
+func (e *Executor) recordSubprocessOutput(stdout, stderr string) {
+	switch e.cfg.Logging.Subprocess {
+	case "log":
+		e.logSubprocessOutput("stdout", stdout)
+		e.logSubprocessOutput("stderr", stderr)
+	case "file":
+		e.writeSubprocessFile(stdout, stderr)
+	default: // "off": the failing item is reported from the parsed stderr instead.
+	}
+}
+
+// logSubprocessOutput emits up to MaxLoggedSubprocessLines lines at debug and
+// says how many it dropped.
+func (e *Executor) logSubprocessOutput(stream, out string) {
+	if strings.TrimSpace(out) == "" {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i, line := range lines {
+		if i >= MaxLoggedSubprocessLines {
+			e.logger.Debug("nextcloudcmd output truncated",
+				"stream", stream,
+				"logged", MaxLoggedSubprocessLines,
+				"suppressed", len(lines)-MaxLoggedSubprocessLines,
+			)
+			return
+		}
+		e.logger.Debug("nextcloudcmd "+stream, "line", line)
+	}
+}
+
+// writeSubprocessFile appends this sync's subprocess output to the configured
+// file, keeping the journal for daemon events only.
+func (e *Executor) writeSubprocessFile(stdout, stderr string) {
+	path := e.cfg.Logging.SubprocessFile
+	if path == "" {
+		return
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		e.logger.Warn("cannot write subprocess output", "path", path, "error", err)
+		return
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			e.logger.Warn("cannot close subprocess output file", "path", path, "error", closeErr)
+		}
+	}()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "==== %s sync ====\n", time.Now().UTC().Format(time.RFC3339))
+	if strings.TrimSpace(stdout) != "" {
+		fmt.Fprintf(&b, "---- stdout ----\n%s\n", strings.TrimRight(stdout, "\n"))
+	}
+	if strings.TrimSpace(stderr) != "" {
+		fmt.Fprintf(&b, "---- stderr ----\n%s\n", strings.TrimRight(stderr, "\n"))
+	}
+
+	if _, err := f.WriteString(b.String()); err != nil {
+		e.logger.Warn("cannot write subprocess output", "path", path, "error", err)
+	}
 }

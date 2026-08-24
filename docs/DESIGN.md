@@ -251,6 +251,23 @@ Health endpoint response (JSON):
 }
 ```
 
+When the last sync failed, three further fields name the item that caused it,
+parsed out of `nextcloudcmd`'s stderr (#44). They are absent while the daemon is
+healthy, so the endpoint always describes the current state:
+
+```json
+{
+    "status": "degraded",
+    "last_fail_reason": "BlacklistedError",
+    "last_fail_path": "Drawings/Schematic\r\n (As-Is)v2.pdf",
+    "last_fail_detail": "400 Bad Request"
+}
+```
+
+`last_fail_reason` is the client's `SyncFileItem::Status` token. Control
+characters in a path arrive escaped, since a filename holding a real CR+LF would
+otherwise split the log line or the JSON value that reports it.
+
 ### Config (`internal/config/`)
 
 YAML parsed with `gopkg.in/yaml.v3`. Validated on load — fail fast with clear error messages.

@@ -121,10 +121,33 @@ func (e *Executor) Run(ctx context.Context) (*daemon.SyncResult, error) {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 			result.Error = fmt.Errorf("nextcloudcmd exited with code %d", result.ExitCode)
-			e.logger.Error("sync failed",
+
+			// The exit code says only that something failed. The item that
+			// caused it is in the stderr we already captured, so pull it out
+			// rather than making the reader re-run the sync by hand (Refs #44).
+			f := parseFailure(stderr.String())
+			result.FailReason = f.Reason
+			result.FailPath = f.Path
+			result.FailDetail = f.Detail
+
+			attrs := []any{
 				"exit_code", result.ExitCode,
 				"duration_ms", result.Duration.Milliseconds(),
-			)
+			}
+			if f.Reason != "" {
+				attrs = append(attrs, "fail_reason", f.Reason)
+			}
+			if f.Path != "" {
+				attrs = append(attrs, "fail_path", f.Path)
+			}
+			if f.Detail != "" {
+				attrs = append(attrs, "fail_detail", f.Detail)
+			}
+			if !f.found() {
+				attrs = append(attrs, "fail_reason", "unparsed", "stderr_bytes", stderr.Len())
+			}
+			e.logger.Error("sync failed", attrs...)
+
 			return result, nil // non-zero exit is not a Go error
 		}
 

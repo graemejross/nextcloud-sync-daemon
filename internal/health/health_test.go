@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -384,5 +385,79 @@ func TestConcurrentAccess(t *testing.T) {
 	total := s.syncCount + s.failCount
 	if total != goroutines {
 		t.Errorf("total syncs = %d, want %d", total, goroutines)
+	}
+}
+
+// A degraded daemon must name the item that failed, so a monitor reading the
+// endpoint does not have to go to the journal for it (Refs #44).
+func TestHandlerExposesFailureDetail(t *testing.T) {
+	s := NewStatus()
+	s.RecordSync(&daemon.SyncResult{
+		StartTime:  time.Date(2026, 3, 16, 10, 30, 0, 0, time.UTC),
+		Duration:   900 * time.Millisecond,
+		ExitCode:   1,
+		Trigger:    "poller",
+		FailReason: "BlacklistedError",
+		FailPath:   `Drawings/plan\r\n v2.pdf`,
+		FailDetail: "400 Bad Request",
+	})
+
+	handler := s.Handler()
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Status != "degraded" {
+		t.Errorf("status = %q, want degraded", resp.Status)
+	}
+	if resp.LastFailReason == nil || *resp.LastFailReason != "BlacklistedError" {
+		t.Errorf("last_fail_reason = %v, want BlacklistedError", resp.LastFailReason)
+	}
+	if resp.LastFailPath == nil || *resp.LastFailPath != `Drawings/plan\r\n v2.pdf` {
+		t.Errorf("last_fail_path = %v, want the escaped path", resp.LastFailPath)
+	}
+	if resp.LastFailDetail == nil || *resp.LastFailDetail != "400 Bad Request" {
+		t.Errorf("last_fail_detail = %v, want 400 Bad Request", resp.LastFailDetail)
+	}
+}
+
+// After a recovery the failure fields must disappear, so the endpoint always
+// describes the current state rather than a stale one.
+func TestHandlerDropsFailureDetailAfterRecovery(t *testing.T) {
+	s := NewStatus()
+	s.RecordSync(&daemon.SyncResult{
+		StartTime:  time.Now(),
+		ExitCode:   1,
+		Trigger:    "poller",
+		FailReason: "NormalError",
+		FailPath:   "Reports/q1.csv",
+	})
+	s.RecordSync(&daemon.SyncResult{
+		StartTime: time.Now(),
+		ExitCode:  0,
+		Trigger:   "poller",
+	})
+
+	handler := s.Handler()
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest("GET", "/", nil))
+
+	body := rec.Body.String()
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.LastFailReason != nil || resp.LastFailPath != nil {
+		t.Errorf("failure fields survived a successful sync: %v %v", resp.LastFailReason, resp.LastFailPath)
+	}
+	if strings.Contains(body, "last_fail_") {
+		t.Errorf("failure keys present in JSON after recovery: %s", body)
+	}
+	if resp.FailCount != 1 {
+		t.Errorf("fail_count = %d, want 1 (the counter still records the failure)", resp.FailCount)
 	}
 }

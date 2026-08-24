@@ -200,6 +200,21 @@ journalctl --user -u nextcloud-sync-daemon -f
 curl http://127.0.0.1:8768/
 ```
 
+**When a sync fails.** The daemon reads `nextcloudcmd`'s output and names the
+item that failed, so you do not have to reproduce the sync by hand:
+
+```
+level=ERROR msg="sync failed" exit_code=1 duration_ms=4 fail_reason=BlacklistedError \
+  fail_path="Drawings/Schematic\\r\\n (As-Is)v2.pdf" fail_detail="400 Bad Request"
+```
+
+`fail_reason` is the sync client's own status for that item; `BlacklistedError`,
+`FileNameInvalid` and `FileNameInvalidOnServer` all mean the server refused the
+file rather than the transfer breaking. Control characters in a filename are
+escaped, so a name containing a real newline still prints on one line. The same
+three values appear on the health endpoint as `last_fail_reason`,
+`last_fail_path` and `last_fail_detail` while the daemon is degraded.
+
 ## Server-side setup script
 
 The two sections below describe the server-side setup manually. [`contrib/nextcloud-server-setup.sh`](contrib/nextcloud-server-setup.sh) automates them — run it on the Nextcloud server (not the sync client):

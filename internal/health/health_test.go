@@ -516,3 +516,33 @@ func TestInvalidNamesAbsentWhenClean(t *testing.T) {
 		t.Errorf("invalid-name keys present on a clean daemon: %s", body)
 	}
 }
+
+// A path already counted by the startup scan must not be counted again when the
+// watcher meets it, even when it falls outside the displayed list.
+func TestAddInvalidNameDoesNotDoubleCountScannedPaths(t *testing.T) {
+	s := NewStatus()
+
+	var paths []string
+	for i := 0; i < maxDisplayedNames+5; i++ {
+		paths = append(paths, fmt.Sprintf("bad-%d\\r.txt", i))
+	}
+	s.SetInvalidNames(paths, len(paths))
+
+	// One inside the displayed list, one outside it.
+	s.AddInvalidName(paths[0], maxDisplayedNames)
+	s.AddInvalidName(paths[len(paths)-1], maxDisplayedNames)
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InvalidNameCount != len(paths) {
+		t.Errorf("invalid_name_count = %d, want %d", resp.InvalidNameCount, len(paths))
+	}
+	if len(resp.InvalidNames) != maxDisplayedNames {
+		t.Errorf("invalid_names holds %d entries, want the %d cap", len(resp.InvalidNames), maxDisplayedNames)
+	}
+}

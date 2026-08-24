@@ -117,27 +117,32 @@ func TestTreeReportsBadDirectoryOnce(t *testing.T) {
 	}
 }
 
-func TestTreeCapsFindings(t *testing.T) {
+// A scan keeps every finding it meets (up to a hard memory limit), but a log
+// line names only the first few and says there are more.
+func TestSummaryNamesAFewAndMarksTheRest(t *testing.T) {
 	root := t.TempDir()
-	for i := 0; i < maxFindings+10; i++ {
-		writeFile(t, filepath.Join(root, "bad\r"+strings.Repeat("x", i%5)+string(rune('a'+i%26))+".txt"))
+	const count = maxSummaryNames + 3
+	for i := 0; i < count; i++ {
+		writeFile(t, filepath.Join(root, "bad\r"+string(rune('a'+i))+".txt"))
 	}
 
 	res, err := Tree(root)
 	if err != nil {
 		t.Fatalf("Tree: %v", err)
 	}
-	if len(res.Paths) != maxFindings {
-		t.Errorf("Paths length = %d, want the %d cap", len(res.Paths), maxFindings)
+	if res.Total != count {
+		t.Errorf("Total = %d, want %d", res.Total, count)
 	}
-	if res.Total <= maxFindings {
-		t.Errorf("Total = %d, want more than the cap", res.Total)
+	if len(res.Paths) != count {
+		t.Errorf("Paths holds %d entries, want all %d", len(res.Paths), count)
 	}
-	if !res.Truncated() {
-		t.Error("Truncated() = false when findings were dropped")
+
+	summary := res.Summary()
+	if n := strings.Count(summary, ".txt"); n != maxSummaryNames {
+		t.Errorf("summary named %d paths, want %d", n, maxSummaryNames)
 	}
-	if !strings.HasSuffix(res.Summary(), "…") {
-		t.Errorf("Summary did not mark the truncation: %q", res.Summary())
+	if !strings.HasSuffix(summary, "…") {
+		t.Errorf("summary did not mark the omitted paths: %q", summary)
 	}
 }
 

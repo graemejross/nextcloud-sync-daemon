@@ -22,6 +22,7 @@ type Status struct {
 	lastWebhookReceived *time.Time
 	invalidNames        []string
 	invalidNameCount    int
+	invalidSeen         map[string]bool
 }
 
 // NewStatus creates a Status with the current time as the start time.
@@ -30,6 +31,7 @@ func NewStatus() *Status {
 		started:       time.Now(),
 		sources:       make(map[string]bool),
 		triggerCounts: make(map[string]int64),
+		invalidSeen:   make(map[string]bool),
 	}
 }
 
@@ -53,9 +55,25 @@ func (s *Status) RecordSync(result *daemon.SyncResult) {
 func (s *Status) SetInvalidNames(paths []string, total int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Remember every path the scan saw, not just the ones the endpoint will
+	// show. Otherwise a file beyond the display cap gets counted a second time
+	// when the watcher meets it.
+	s.invalidSeen = make(map[string]bool, len(paths))
+	for _, p := range paths {
+		s.invalidSeen[p] = true
+	}
+
 	s.invalidNames = append([]string(nil), paths...)
+	if len(s.invalidNames) > maxDisplayedNames {
+		s.invalidNames = s.invalidNames[:maxDisplayedNames]
+	}
 	s.invalidNameCount = total
 }
+
+// maxDisplayedNames bounds how many offending paths the health response lists.
+// The count beside them is not bounded.
+const maxDisplayedNames = 50
 
 // AddInvalidName records one further offending path, for names that appear
 // after the startup scan. Repeats are ignored so a file touched repeatedly is
@@ -63,11 +81,14 @@ func (s *Status) SetInvalidNames(paths []string, total int) {
 func (s *Status) AddInvalidName(path string, max int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, existing := range s.invalidNames {
-		if existing == path {
-			return
-		}
+	if s.invalidSeen[path] {
+		return
 	}
+	if s.invalidSeen == nil {
+		s.invalidSeen = make(map[string]bool)
+	}
+	s.invalidSeen[path] = true
+
 	s.invalidNameCount++
 	if len(s.invalidNames) < max {
 		s.invalidNames = append(s.invalidNames, path)

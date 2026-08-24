@@ -15,15 +15,20 @@ import (
 	"strings"
 )
 
-// maxFindings bounds a scan. A tree that has gone badly wrong should not turn
-// one warning into thousands, and the first few names are enough to act on.
-const maxFindings = 50
+// maxFindings bounds what a scan keeps. A tree that has gone badly wrong should
+// not grow the daemon's memory without limit; the count is exact well past the
+// point where the individual names stop being useful.
+const maxFindings = 10000
+
+// maxSummaryNames bounds how many names a single log line carries. The first
+// few are enough to act on, and the count says how many more there are.
+const maxSummaryNames = 5
 
 // Result reports what a scan found.
 type Result struct {
 	// Paths are the offending paths, relative to the scanned root and escaped
 	// for display. At most maxFindings entries.
-	Paths []string
+	Paths []string //nolint:godot
 	// Total counts every offending path found, including those beyond
 	// maxFindings.
 	Total int
@@ -107,13 +112,18 @@ func Tree(root string) (Result, error) {
 	return res, nil
 }
 
-// Summary renders a Result for a log line.
+// Summary renders a Result for a log line, naming at most maxSummaryNames
+// paths. The full count travels alongside it as its own field.
 func (r Result) Summary() string {
 	if r.Total == 0 {
 		return "none"
 	}
-	s := strings.Join(r.Paths, ", ")
-	if r.Truncated() {
+	shown := r.Paths
+	if len(shown) > maxSummaryNames {
+		shown = shown[:maxSummaryNames]
+	}
+	s := strings.Join(shown, ", ")
+	if r.Total > len(shown) {
 		s += ", …"
 	}
 	return s

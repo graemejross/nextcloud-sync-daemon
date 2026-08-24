@@ -4,10 +4,12 @@ package health
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/scan"
 )
 
 // Status tracks the daemon's health state. All methods are safe for concurrent use.
@@ -23,6 +25,9 @@ type Status struct {
 	invalidNames        []string
 	invalidNameCount    int
 	invalidSeen         map[string]bool
+	conflictFiles       []conflictEntry
+	conflictCount       int
+	conflictSeen        map[string]bool
 }
 
 // NewStatus creates a Status with the current time as the start time.
@@ -32,6 +37,7 @@ func NewStatus() *Status {
 		sources:       make(map[string]bool),
 		triggerCounts: make(map[string]int64),
 		invalidSeen:   make(map[string]bool),
+		conflictSeen:  make(map[string]bool),
 	}
 }
 
@@ -95,6 +101,66 @@ func (s *Status) AddInvalidName(path string, max int) {
 	}
 }
 
+// conflictEntry is one conflicted copy as the endpoint reports it.
+type conflictEntry struct {
+	Path     string `json:"path"`
+	Modified string `json:"modified"`
+}
+
+// maxDisplayedConflicts bounds how many conflicted copies the health response
+// lists. The count beside them is not bounded.
+const maxDisplayedConflicts = 10
+
+// SetConflictFiles records the conflicted copies a scan found, newest first
+// (Refs #47).
+func (s *Status) SetConflictFiles(conflicts []scan.Conflict, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.conflictSeen = make(map[string]bool, len(conflicts))
+	s.conflictFiles = nil
+	for _, c := range conflicts {
+		s.conflictSeen[c.Path] = true
+		if len(s.conflictFiles) < maxDisplayedConflicts {
+			s.conflictFiles = append(s.conflictFiles, conflictEntry{
+				Path:     c.Path,
+				Modified: c.ModTime.UTC().Format(time.RFC3339),
+			})
+		}
+	}
+	s.conflictCount = total
+}
+
+// AddConflictFile records one conflicted copy seen after the startup scan.
+// Repeats are ignored, so a file touched several times is counted once.
+func (s *Status) AddConflictFile(path string, modTime time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conflictSeen[path] {
+		return
+	}
+	if s.conflictSeen == nil {
+		s.conflictSeen = make(map[string]bool)
+	}
+	s.conflictSeen[path] = true
+
+	s.conflictCount++
+
+	// Keep the list newest first, the order the scan established, so a
+	// conflict written just now sorts above one from three years ago instead
+	// of landing at the bottom.
+	s.conflictFiles = append(s.conflictFiles, conflictEntry{
+		Path:     path,
+		Modified: modTime.UTC().Format(time.RFC3339),
+	})
+	sort.SliceStable(s.conflictFiles, func(i, j int) bool {
+		return s.conflictFiles[i].Modified > s.conflictFiles[j].Modified
+	})
+	if len(s.conflictFiles) > maxDisplayedConflicts {
+		s.conflictFiles = s.conflictFiles[:maxDisplayedConflicts]
+	}
+}
+
 // RecordWebhookReceived records the time a valid webhook was received.
 func (s *Status) RecordWebhookReceived(t time.Time) {
 	s.mu.Lock()
@@ -133,6 +199,11 @@ type response struct {
 	// daemon has found some; InvalidNames is capped, InvalidNameCount is not.
 	InvalidNameCount int      `json:"invalid_name_count,omitempty"`
 	InvalidNames     []string `json:"invalid_names,omitempty"`
+
+	// Conflicted copies the sync client has left in the tree (Refs #47).
+	// ConflictFileCount is exact; ConflictFiles lists the newest few.
+	ConflictFileCount int             `json:"conflict_file_count,omitempty"`
+	ConflictFiles     []conflictEntry `json:"conflict_files,omitempty"`
 }
 
 // Handler returns an http.HandlerFunc that serves the health check JSON response.
@@ -177,6 +248,11 @@ func (s *Status) Handler() http.HandlerFunc {
 		if s.invalidNameCount > 0 {
 			resp.InvalidNameCount = s.invalidNameCount
 			resp.InvalidNames = append([]string(nil), s.invalidNames...)
+		}
+
+		if s.conflictCount > 0 {
+			resp.ConflictFileCount = s.conflictCount
+			resp.ConflictFiles = append([]conflictEntry(nil), s.conflictFiles...)
 		}
 
 		if s.lastWebhookReceived != nil {

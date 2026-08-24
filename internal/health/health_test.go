@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/graemejross/nextcloud-sync-daemon/internal/daemon"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/scan"
 )
 
 func TestNewStatus(t *testing.T) {
@@ -544,5 +545,97 @@ func TestAddInvalidNameDoesNotDoubleCountScannedPaths(t *testing.T) {
 	}
 	if len(resp.InvalidNames) != maxDisplayedNames {
 		t.Errorf("invalid_names holds %d entries, want the %d cap", len(resp.InvalidNames), maxDisplayedNames)
+	}
+}
+
+// Conflicted copies are reported with an exact count and the newest few paths
+// (Refs #47).
+func TestConflictFilesReported(t *testing.T) {
+	s := NewStatus()
+	s.SetConflictFiles([]scan.Conflict{
+		{Path: "report (conflicted copy 2026-04-10 191233).pdf", ModTime: time.Date(2026, 4, 10, 19, 12, 33, 0, time.UTC)},
+		{Path: "notes (conflicted copy 2023-01-02 101010).md", ModTime: time.Date(2023, 1, 2, 10, 10, 10, 0, time.UTC)},
+	}, 2)
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ConflictFileCount != 2 {
+		t.Errorf("conflict_file_count = %d, want 2", resp.ConflictFileCount)
+	}
+	if len(resp.ConflictFiles) != 2 {
+		t.Fatalf("conflict_files holds %d entries, want 2", len(resp.ConflictFiles))
+	}
+	if resp.ConflictFiles[0].Modified != "2026-04-10T19:12:33Z" {
+		t.Errorf("modified = %q, want the file's mtime in RFC3339", resp.ConflictFiles[0].Modified)
+	}
+}
+
+// The list is capped, the count is not, and a path already counted by the scan
+// is not counted again when the watcher sees it.
+func TestConflictFilesCapAndDedup(t *testing.T) {
+	s := NewStatus()
+
+	var conflicts []scan.Conflict
+	for i := 0; i < maxDisplayedConflicts+5; i++ {
+		conflicts = append(conflicts, scan.Conflict{Path: fmt.Sprintf("f%d (conflicted copy 2026-04-10 191233).pdf", i)})
+	}
+	s.SetConflictFiles(conflicts, len(conflicts))
+
+	s.AddConflictFile(conflicts[0].Path, time.Now())
+	s.AddConflictFile(conflicts[len(conflicts)-1].Path, time.Now())
+	s.AddConflictFile("new (conflicted copy 2026-08-24 120000).pdf", time.Now())
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if want := len(conflicts) + 1; resp.ConflictFileCount != want {
+		t.Errorf("conflict_file_count = %d, want %d", resp.ConflictFileCount, want)
+	}
+	if len(resp.ConflictFiles) != maxDisplayedConflicts {
+		t.Errorf("conflict_files holds %d entries, want the %d cap", len(resp.ConflictFiles), maxDisplayedConflicts)
+	}
+}
+
+func TestConflictFilesAbsentWhenNone(t *testing.T) {
+	s := NewStatus()
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	if body := rec.Body.String(); strings.Contains(body, "conflict_file") {
+		t.Errorf("conflict keys present when there are none: %s", body)
+	}
+}
+
+// A conflict seen at runtime takes its place by date, not at the end of the
+// list, so "newest first" holds however the entry arrived.
+func TestAddConflictFileKeepsNewestFirst(t *testing.T) {
+	s := NewStatus()
+	s.SetConflictFiles([]scan.Conflict{
+		{Path: "old (conflicted copy 2023-01-02 101010).pdf", ModTime: time.Date(2023, 1, 2, 10, 10, 10, 0, time.UTC)},
+	}, 1)
+
+	s.AddConflictFile("new (conflicted copy 2026-08-24 174500).pdf", time.Date(2026, 8, 24, 17, 45, 0, 0, time.UTC))
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.ConflictFiles) != 2 {
+		t.Fatalf("conflict_files holds %d entries, want 2", len(resp.ConflictFiles))
+	}
+	if !strings.HasPrefix(resp.ConflictFiles[0].Path, "new ") {
+		t.Errorf("first entry is %q, want the 2026 one", resp.ConflictFiles[0].Path)
 	}
 }

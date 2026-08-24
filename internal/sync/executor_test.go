@@ -44,6 +44,10 @@ func TestHelperProcess(t *testing.T) {
 		fmt.Println(strings.Join(args, "\n"))
 	}
 
+	if msg := os.Getenv("GO_TEST_HELPER_STDERR"); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+
 	if delay := os.Getenv("GO_TEST_HELPER_DELAY"); delay != "" {
 		d, _ := time.ParseDuration(delay)
 		time.Sleep(d)
@@ -132,6 +136,53 @@ func TestExecutorNonZeroExit(t *testing.T) {
 	}
 	if result.Error == nil {
 		t.Error("expected result.Error for non-zero exit")
+	}
+}
+
+// A failing sync must carry the offending item out of stderr and into the
+// result, so the reader is not left with a bare exit code (Refs #44).
+func TestExecutorNonZeroExitRecordsFailingItem(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	cfg := testConfig(t, cmd)
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "1")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+	t.Setenv("GO_TEST_HELPER_STDERR",
+		`[ warning nextcloud.sync.propagator ]:	Could not complete propagation of "Drawings/plan.pdf" by OCC::PropagateUploadFileNG(0x1) with status BlacklistedError and error: "400 Bad Request"`)
+
+	executor := NewExecutor(cfg, quietLogger())
+	result, err := executor.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.FailReason != "BlacklistedError" {
+		t.Errorf("FailReason = %q, want BlacklistedError", result.FailReason)
+	}
+	if result.FailPath != "Drawings/plan.pdf" {
+		t.Errorf("FailPath = %q, want Drawings/plan.pdf", result.FailPath)
+	}
+	if result.FailDetail != "400 Bad Request" {
+		t.Errorf("FailDetail = %q, want 400 Bad Request", result.FailDetail)
+	}
+}
+
+// A successful sync leaves the failure fields empty.
+func TestExecutorSuccessHasNoFailureFields(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	cfg := testConfig(t, cmd)
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "0")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+
+	executor := NewExecutor(cfg, quietLogger())
+	result, err := executor.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FailReason != "" || result.FailPath != "" || result.FailDetail != "" {
+		t.Errorf("failure fields set on a successful sync: %+v", result)
 	}
 }
 

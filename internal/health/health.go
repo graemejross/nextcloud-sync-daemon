@@ -72,6 +72,13 @@ type response struct {
 	Sources             map[string]bool  `json:"sources"`
 	TriggerCounts       map[string]int64 `json:"trigger_counts"`
 	LastWebhookReceived *string          `json:"last_webhook_received"`
+
+	// Failure detail for the last sync, present only while that sync is the
+	// failed one (Refs #44). A monitor seeing "degraded" gets the offending
+	// item here instead of having to read the journal.
+	LastFailReason *string `json:"last_fail_reason,omitempty"`
+	LastFailPath   *string `json:"last_fail_path,omitempty"`
+	LastFailDetail *string `json:"last_fail_detail,omitempty"`
 }
 
 // Handler returns an http.HandlerFunc that serves the health check JSON response.
@@ -101,6 +108,16 @@ func (s *Status) Handler() http.HandlerFunc {
 			dur := s.lastSync.Duration.Milliseconds()
 			resp.LastSyncDuration = &dur
 			resp.LastSyncTrigger = &s.lastSync.Trigger
+
+			if s.lastSync.FailReason != "" {
+				resp.LastFailReason = &s.lastSync.FailReason
+			}
+			if s.lastSync.FailPath != "" {
+				resp.LastFailPath = &s.lastSync.FailPath
+			}
+			if s.lastSync.FailDetail != "" {
+				resp.LastFailDetail = &s.lastSync.FailDetail
+			}
 		}
 
 		if s.lastWebhookReceived != nil {

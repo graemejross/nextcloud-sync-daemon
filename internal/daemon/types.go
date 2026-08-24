@@ -21,6 +21,13 @@ type SyncResult struct {
 	ExitCode  int
 	Trigger   string // what caused this sync
 	Error     error
+
+	// Failure describes the item that failed the sync, recovered from
+	// nextcloudcmd's stderr (Refs #44). All three are empty when the sync
+	// succeeded or when stderr carried nothing recognisable.
+	FailReason string // SyncFileItem::Status token, e.g. "BlacklistedError"
+	FailPath   string // path of the failing item, control characters escaped
+	FailDetail string // the client's error string for that item
 }
 
 // EventSource produces sync trigger events. Each trigger layer implements this.

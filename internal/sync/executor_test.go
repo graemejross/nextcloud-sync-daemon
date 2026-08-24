@@ -366,3 +366,152 @@ func TestCheckNextcloudCmd(t *testing.T) {
 
 	_ = exec.Command // keep import
 }
+
+// subprocessConfig returns a config whose subprocess logging is set to mode.
+func subprocessConfig(t *testing.T, cmd, mode, file string) *config.Config {
+	t.Helper()
+	cfg := testConfig(t, cmd)
+	cfg.Logging.Subprocess = mode
+	cfg.Logging.SubprocessFile = file
+	return cfg
+}
+
+// captureLogger returns a debug-level logger writing into buf.
+func captureLogger(buf *strings.Builder) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// The default keeps nextcloudcmd's output out of the journal, which is what
+// makes level: debug usable for daemon events again (Refs #46).
+func TestSubprocessOutputOffByDefault(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	cfg := subprocessConfig(t, cmd, "off", "")
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "0")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+	t.Setenv("GO_TEST_HELPER_STDERR", "chatty subprocess line")
+
+	var buf strings.Builder
+	executor := NewExecutor(cfg, captureLogger(&buf))
+	if _, err := executor.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "chatty subprocess line") {
+		t.Errorf("subprocess output reached the log with subprocess=off:\n%s", buf.String())
+	}
+}
+
+func TestSubprocessOutputLogged(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	cfg := subprocessConfig(t, cmd, "log", "")
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "0")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+	t.Setenv("GO_TEST_HELPER_STDERR", "chatty subprocess line")
+
+	var buf strings.Builder
+	executor := NewExecutor(cfg, captureLogger(&buf))
+	if _, err := executor.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "chatty subprocess line") {
+		t.Errorf("subprocess output missing with subprocess=log:\n%s", buf.String())
+	}
+}
+
+// The opt-in must still be bounded: an uncapped dump is what silently pushed
+// the daemon's own events out of the journal.
+func TestSubprocessOutputLogCapped(t *testing.T) {
+	var out strings.Builder
+	for i := 0; i < MaxLoggedSubprocessLines+50; i++ {
+		fmt.Fprintf(&out, "line %d\n", i)
+	}
+
+	var buf strings.Builder
+	e := &Executor{cfg: &config.Config{}, logger: captureLogger(&buf)}
+	e.logSubprocessOutput("stderr", out.String())
+
+	logged := strings.Count(buf.String(), "nextcloudcmd stderr")
+	if logged != MaxLoggedSubprocessLines {
+		t.Errorf("logged %d lines, want the %d-line cap", logged, MaxLoggedSubprocessLines)
+	}
+	if !strings.Contains(buf.String(), "suppressed=50") {
+		t.Errorf("cap did not report what it dropped:\n%s", buf.String())
+	}
+}
+
+func TestSubprocessOutputToFile(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	path := filepath.Join(t.TempDir(), "subprocess.log")
+	cfg := subprocessConfig(t, cmd, "file", path)
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "0")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+	t.Setenv("GO_TEST_HELPER_STDERR", "chatty subprocess line")
+
+	var buf strings.Builder
+	executor := NewExecutor(cfg, captureLogger(&buf))
+	if _, err := executor.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading subprocess file: %v", err)
+	}
+	if !strings.Contains(string(data), "chatty subprocess line") {
+		t.Errorf("subprocess file missing the output:\n%s", data)
+	}
+	if strings.Contains(buf.String(), "chatty subprocess line") {
+		t.Errorf("subprocess output also reached the journal:\n%s", buf.String())
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("subprocess file mode = %o, want 600", perm)
+	}
+
+	// A second sync appends rather than truncating.
+	if _, err := executor.Run(context.Background()); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-reading subprocess file: %v", err)
+	}
+	if n := strings.Count(string(data), "chatty subprocess line"); n != 2 {
+		t.Errorf("found %d entries after two syncs, want 2", n)
+	}
+}
+
+// An unwritable destination must not fail the sync.
+func TestSubprocessFileErrorDoesNotFailSync(t *testing.T) {
+	cmd := fakeNextcloudCmd(t)
+	cfg := subprocessConfig(t, cmd, "file", filepath.Join(t.TempDir(), "no-such-dir", "out.log"))
+
+	t.Setenv("GO_TEST_HELPER_PROCESS", "1")
+	t.Setenv("GO_TEST_HELPER_EXIT_CODE", "0")
+	t.Setenv("GO_TEST_HELPER_PRINT_ARGS", "0")
+	t.Setenv("GO_TEST_HELPER_STDERR", "chatty subprocess line")
+
+	var buf strings.Builder
+	executor := NewExecutor(cfg, captureLogger(&buf))
+	result, err := executor.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	}
+	if !strings.Contains(buf.String(), "cannot write subprocess output") {
+		t.Errorf("no warning about the unwritable destination:\n%s", buf.String())
+	}
+}

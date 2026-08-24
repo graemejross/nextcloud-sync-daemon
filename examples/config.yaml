@@ -99,6 +99,17 @@ logging:
   # Logs are written to stderr for systemd journal integration
   format: text
 
+  # Where nextcloudcmd's own output goes (default: off)
+  #   off   discard it — the daemon reports the failing item itself
+  #   log   emit it at debug level, capped at 200 lines per sync
+  #   file  append it to subprocess_file, keeping the journal for daemon events
+  #
+  # One sync can emit tens of thousands of client lines. Sending those to the
+  # journal costs you the daemon's own events too: journald drops messages past
+  # its rate limit (10,000 per 30s per service) without saying so.
+  subprocess: off
+  # subprocess_file: /var/log/nextcloud-sync-daemon/nextcloudcmd.log
+
 health:
   # Enable health check endpoint (default: false)
   enabled: false

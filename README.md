@@ -215,6 +215,27 @@ escaped, so a name containing a real newline still prints on one line. The same
 three values appear on the health endpoint as `last_fail_reason`,
 `last_fail_path` and `last_fail_detail` while the daemon is degraded.
 
+**Debug logging and the journal.** `logging.level: debug` turns up the daemon's
+own detail. It does not, by default, dump `nextcloudcmd`'s output: one sync can
+emit tens of thousands of client lines, and journald drops messages past its
+rate limit (10,000 per 30s per service) without a word in the user journal, so
+an unfiltered dump takes the daemon's own `sync complete` and `sync failed`
+events down with it.
+
+To see the client's output, choose where it goes:
+
+```yaml
+logging:
+  level: debug
+  subprocess: file          # off (default) | log | file
+  subprocess_file: /var/log/nextcloud-sync-daemon/nextcloudcmd.log
+```
+
+`file` keeps the journal for daemon events. `log` puts the output in the journal
+at debug level, capped at 200 lines per sync, and the daemon warns at startup
+that journald may still drop events; raise `LogRateLimitBurst` on the unit if
+you need all of it.
+
 ## Server-side setup script
 
 The two sections below describe the server-side setup manually. [`contrib/nextcloud-server-setup.sh`](contrib/nextcloud-server-setup.sh) automates them — run it on the Nextcloud server (not the sync client):

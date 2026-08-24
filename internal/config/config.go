@@ -108,6 +108,21 @@ type NotifyPushConfig struct {
 type LogConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+
+	// Subprocess decides where nextcloudcmd's own stdout/stderr goes (Refs #46):
+	//
+	//   off  (default) discard it; the daemon reports the failing item itself
+	//   log  emit it at debug level, capped per sync
+	//   file append it to SubprocessFile, leaving the journal to daemon events
+	//
+	// It used to follow logging.level, which made "debug" unusable: a single
+	// sync can emit tens of thousands of lines, journald drops messages past
+	// its rate limit, and the daemon's own INFO events go with them.
+	Subprocess string `yaml:"subprocess"`
+
+	// SubprocessFile is the destination for Subprocess: file. Required in that
+	// mode, ignored otherwise.
+	SubprocessFile string `yaml:"subprocess_file"`
 }
 
 type HealthConfig struct {
@@ -180,6 +195,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Logging.Format == "" {
 		cfg.Logging.Format = "text"
+	}
+	if cfg.Logging.Subprocess == "" {
+		cfg.Logging.Subprocess = "off"
 	}
 
 	if cfg.Health.Listen == "" {
@@ -282,6 +300,14 @@ func (c *Config) Validate() error {
 	validFormats := map[string]bool{"text": true, "json": true}
 	if !validFormats[c.Logging.Format] {
 		errs = append(errs, fmt.Errorf("logging.format %q is invalid (use text, json)", c.Logging.Format))
+	}
+
+	validSubprocess := map[string]bool{"off": true, "log": true, "file": true}
+	if !validSubprocess[c.Logging.Subprocess] {
+		errs = append(errs, fmt.Errorf("logging.subprocess %q is invalid (use off, log, file)", c.Logging.Subprocess))
+	}
+	if c.Logging.Subprocess == "file" && c.Logging.SubprocessFile == "" {
+		errs = append(errs, errors.New("logging.subprocess_file is required when logging.subprocess is file"))
 	}
 
 	return errors.Join(errs...)

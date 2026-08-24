@@ -461,3 +461,88 @@ func TestHandlerDropsFailureDetailAfterRecovery(t *testing.T) {
 		t.Errorf("fail_count = %d, want 1 (the counter still records the failure)", resp.FailCount)
 	}
 }
+
+// Filenames the server will reject are reported with a count that is not
+// capped and a list that is (Refs #45).
+func TestInvalidNamesReported(t *testing.T) {
+	s := NewStatus()
+	s.SetInvalidNames([]string{`sub/Schematic\r\n v2.pdf`}, 1)
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InvalidNameCount != 1 {
+		t.Errorf("invalid_name_count = %d, want 1", resp.InvalidNameCount)
+	}
+	if len(resp.InvalidNames) != 1 || resp.InvalidNames[0] != `sub/Schematic\r\n v2.pdf` {
+		t.Errorf("invalid_names = %q, want the escaped path", resp.InvalidNames)
+	}
+}
+
+func TestAddInvalidNameDeduplicatesAndCaps(t *testing.T) {
+	s := NewStatus()
+	for i := 0; i < 3; i++ {
+		s.AddInvalidName(`one\r.txt`, 2)
+	}
+	s.AddInvalidName(`two\r.txt`, 2)
+	s.AddInvalidName(`three\r.txt`, 2)
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InvalidNameCount != 3 {
+		t.Errorf("invalid_name_count = %d, want 3 (one entry per distinct path)", resp.InvalidNameCount)
+	}
+	if len(resp.InvalidNames) != 2 {
+		t.Errorf("invalid_names holds %d entries, want the cap of 2", len(resp.InvalidNames))
+	}
+}
+
+// A clean tree leaves both fields out of the response entirely.
+func TestInvalidNamesAbsentWhenClean(t *testing.T) {
+	s := NewStatus()
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	if body := rec.Body.String(); strings.Contains(body, "invalid_name") {
+		t.Errorf("invalid-name keys present on a clean daemon: %s", body)
+	}
+}
+
+// A path already counted by the startup scan must not be counted again when the
+// watcher meets it, even when it falls outside the displayed list.
+func TestAddInvalidNameDoesNotDoubleCountScannedPaths(t *testing.T) {
+	s := NewStatus()
+
+	var paths []string
+	for i := 0; i < maxDisplayedNames+5; i++ {
+		paths = append(paths, fmt.Sprintf("bad-%d\\r.txt", i))
+	}
+	s.SetInvalidNames(paths, len(paths))
+
+	// One inside the displayed list, one outside it.
+	s.AddInvalidName(paths[0], maxDisplayedNames)
+	s.AddInvalidName(paths[len(paths)-1], maxDisplayedNames)
+
+	rec := httptest.NewRecorder()
+	s.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+
+	var resp response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InvalidNameCount != len(paths) {
+		t.Errorf("invalid_name_count = %d, want %d", resp.InvalidNameCount, len(paths))
+	}
+	if len(resp.InvalidNames) != maxDisplayedNames {
+		t.Errorf("invalid_names holds %d entries, want the %d cap", len(resp.InvalidNames), maxDisplayedNames)
+	}
+}

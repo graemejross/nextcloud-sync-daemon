@@ -215,6 +215,26 @@ escaped, so a name containing a real newline still prints on one line. The same
 three values appear on the health endpoint as `last_fail_reason`,
 `last_fail_path` and `last_fail_detail` while the daemon is degraded.
 
+**Filenames the server will reject.** Linux accepts almost any byte in a
+filename; WebDAV does not. A name holding a control character (a carriage
+return or newline, usually pasted in from a document or an email subject) cannot
+be expressed as a WebDAV path, so the server refuses it and the client fails the
+whole sync, not just that file. Until the file is renamed, every sync fails the
+same way.
+
+The daemon scans the sync directory at startup and watches for such names as
+they appear:
+
+```
+level=WARN msg="found filenames the server will reject — rename them or every sync will fail" count=1 paths="Drawings/Schematic\\r\\n (As-Is)v2.pdf"
+```
+
+Control characters are escaped in that output, so a name containing a real
+newline still prints on one line. The health endpoint carries the same finding
+as `invalid_name_count` and `invalid_names` while any remain. The daemon does
+not rename or move anything; the fix is yours to make, usually `mv` to replace
+the offending character.
+
 **Debug logging and the journal.** `logging.level: debug` turns up the daemon's
 own detail. It does not, by default, dump `nextcloudcmd`'s output: one sync can
 emit tens of thousands of client lines, and journald drops messages past its

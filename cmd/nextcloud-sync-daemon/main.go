@@ -22,6 +22,7 @@ import (
 	"github.com/graemejross/nextcloud-sync-daemon/internal/notifypush"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/peer"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/poller"
+	"github.com/graemejross/nextcloud-sync-daemon/internal/scan"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/svcinit"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/sync"
 	"github.com/graemejross/nextcloud-sync-daemon/internal/watcher"
@@ -210,10 +211,23 @@ func run() int {
 	// Always create health status — used by webhook and engine even if HTTP endpoint is disabled
 	healthStatus := health.NewStatus()
 
+	// Names holding control characters break the sync for the whole tree, not
+	// just for themselves, so find them before the first sync rather than
+	// after the first failure (Refs #45).
+	if res, err := scan.Tree(cfg.Sync.LocalDir); err != nil {
+		logger.Warn("could not scan for unusable filenames", "dir", cfg.Sync.LocalDir, "error", err)
+	} else if res.Total > 0 {
+		logger.Warn("found filenames the server will reject — rename them or every sync will fail",
+			"count", res.Total,
+			"paths", res.Summary(),
+		)
+		healthStatus.SetInvalidNames(res.Paths, res.Total)
+	}
+
 	var sources []daemon.EventSource
 
 	if cfg.Watch.Enabled {
-		w, err := watcher.New(cfg.Sync.LocalDir, cfg.Watch.Debounce.Duration, cfg.Watch.Exclude, logger)
+		w, err := watcher.New(cfg.Sync.LocalDir, cfg.Watch.Debounce.Duration, cfg.Watch.Exclude, logger, healthStatus)
 		if err != nil {
 			logger.Error("failed to create watcher", "error", err)
 			return 1

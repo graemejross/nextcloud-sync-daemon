@@ -326,6 +326,13 @@ whose own name is unusable is reported once rather than every file beneath it.
 Nothing is renamed or moved: the daemon names the file and leaves the decision
 to the operator.
 
+The same walk counts conflicted copies (#47). The client names them
+`<name> (conflicted copy <date> <time>).<ext>`, with a username variant and a
+legacy ownCloud `_conflict-<date>-<time>` form; all three are matched. They are
+ordinary files to the server, so they sync without complaint and nothing else
+reports them. `conflict_file_count` is exact and `conflict_files` lists the
+newest ten with modification times. Nothing is deleted.
+
 `logging.subprocess` decides what happens to `nextcloudcmd`'s stdout and stderr
 (#46). It used to follow `logging.level`, which made `debug` counterproductive:
 a single sync emits tens of thousands of client lines, journald drops messages

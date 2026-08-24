@@ -11,8 +11,11 @@ package scan
 import (
 	"io/fs"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // maxFindings bounds what a scan keeps. A tree that has gone badly wrong should
@@ -37,6 +40,40 @@ type Result struct {
 // Truncated reports whether Paths omits findings that Total counts.
 func (r Result) Truncated() bool {
 	return r.Total > len(r.Paths)
+}
+
+// conflictRe matches the names the sync client gives a conflicted copy:
+//
+//	report (conflicted copy 2026-04-10 191233).pdf
+//	report (conflicted copy alice 2026-04-10 191233).pdf   (username variant)
+//	report_conflict-20260410-191233.pdf                    (legacy ownCloud)
+//
+// These are ordinary files as far as the server is concerned. They sync
+// happily, so nothing ever tells the user they exist (Refs #47).
+var conflictRe = regexp.MustCompile(`(?i)\(conflicted copy[^)]*\)|_conflict-\d{8}-\d{6}`)
+
+// IsConflictFile reports whether a filename is a conflicted copy left by the
+// sync client.
+func IsConflictFile(name string) bool {
+	return conflictRe.MatchString(name)
+}
+
+// Conflict is a conflicted copy and when it was last written.
+type Conflict struct {
+	Path    string
+	ModTime time.Time
+}
+
+// Findings is everything one walk of the tree turned up.
+type Findings struct {
+	// InvalidNames are paths the server will reject (Refs #45).
+	InvalidNames Result
+	// Conflicts are conflicted copies the client left behind, newest first
+	// (Refs #47).
+	Conflicts []Conflict
+	// ConflictTotal counts every conflicted copy, including any beyond the
+	// entries kept in Conflicts.
+	ConflictTotal int
 }
 
 // HasControlChars reports whether a path holds a character the server cannot
@@ -66,13 +103,14 @@ func Escape(s string) string {
 	return quoted[1 : len(quoted)-1]
 }
 
-// Tree walks root and returns the paths whose names the server will reject.
+// Tree walks root once and returns everything worth reporting about it: names
+// the server will reject, and conflicted copies the client has left behind.
 //
 // Walk errors on individual entries are skipped rather than aborting the scan:
-// an unreadable subdirectory should not stop the daemon from reporting the
-// names it can see. A failure to read the root itself is returned.
-func Tree(root string) (Result, error) {
-	var res Result
+// an unreadable subdirectory should not stop the daemon from reporting what it
+// can see. A failure to read the root itself is returned.
+func Tree(root string) (Findings, error) {
+	var f Findings
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -84,32 +122,50 @@ func Tree(root string) (Result, error) {
 		if path == root {
 			return nil
 		}
-		if !HasControlChars(d.Name()) {
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+
+		if HasControlChars(d.Name()) {
+			f.InvalidNames.Total++
+			if len(f.InvalidNames.Paths) < maxFindings {
+				f.InvalidNames.Paths = append(f.InvalidNames.Paths, Escape(rel))
+			}
+
+			// A directory whose own name is unusable makes every path beneath
+			// it unusable too. Report the directory and skip its contents
+			// rather than listing every file inside it.
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
-		res.Total++
-		if len(res.Paths) < maxFindings {
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				rel = path
+		if !d.IsDir() && IsConflictFile(d.Name()) {
+			f.ConflictTotal++
+			if len(f.Conflicts) < maxFindings {
+				var mod time.Time
+				if info, statErr := d.Info(); statErr == nil {
+					mod = info.ModTime()
+				}
+				f.Conflicts = append(f.Conflicts, Conflict{Path: Escape(rel), ModTime: mod})
 			}
-			res.Paths = append(res.Paths, Escape(rel))
-		}
-
-		// A directory whose own name is unusable makes every path beneath it
-		// unusable too. Report the directory and skip its contents rather than
-		// listing every file inside it.
-		if d.IsDir() {
-			return filepath.SkipDir
 		}
 		return nil
 	})
 	if err != nil {
-		return Result{}, err
+		return Findings{}, err
 	}
 
-	return res, nil
+	// Newest first: a conflict from this morning means something different
+	// from one left three years ago.
+	sort.SliceStable(f.Conflicts, func(i, j int) bool {
+		return f.Conflicts[i].ModTime.After(f.Conflicts[j].ModTime)
+	})
+
+	return f, nil
 }
 
 // Summary renders a Result for a log line, naming at most maxSummaryNames
@@ -124,6 +180,29 @@ func (r Result) Summary() string {
 	}
 	s := strings.Join(shown, ", ")
 	if r.Total > len(shown) {
+		s += ", …"
+	}
+	return s
+}
+
+// maxSummaryConflicts bounds how many conflicted copies a log line names.
+const maxSummaryConflicts = 3
+
+// ConflictSummary renders the newest few conflicted copies for a log line.
+func ConflictSummary(conflicts []Conflict) string {
+	if len(conflicts) == 0 {
+		return "none"
+	}
+	shown := conflicts
+	if len(shown) > maxSummaryConflicts {
+		shown = shown[:maxSummaryConflicts]
+	}
+	names := make([]string, 0, len(shown))
+	for _, c := range shown {
+		names = append(names, c.Path)
+	}
+	s := strings.Join(names, ", ")
+	if len(conflicts) > len(shown) {
 		s += ", …"
 	}
 	return s

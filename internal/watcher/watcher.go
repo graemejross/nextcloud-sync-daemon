@@ -105,6 +105,7 @@ func (w *Watcher) Start(ctx context.Context, trigger chan<- daemon.Event) error 
 			)
 
 			w.checkName(relPath)
+			w.checkConflict(relPath, event.Name)
 
 			// Watch new directories recursively
 			if event.Op.Has(fsnotify.Create) {
@@ -181,6 +182,24 @@ func (w *Watcher) checkName(relPath string) {
 	if w.health != nil {
 		w.health.AddInvalidName(escaped, maxReportedNames)
 	}
+}
+
+// checkConflict records a conflicted copy the client has just written. These
+// sync without complaint, so nothing else ever reports them and they collect
+// in the tree for years (Refs #47).
+func (w *Watcher) checkConflict(relPath, fullPath string) {
+	if w.health == nil || !scan.IsConflictFile(filepath.Base(relPath)) {
+		return
+	}
+	escaped := scan.Escape(relPath)
+
+	var mod time.Time
+	if info, err := os.Stat(fullPath); err == nil {
+		mod = info.ModTime()
+	} else {
+		mod = time.Now()
+	}
+	w.health.AddConflictFile(escaped, mod)
 }
 
 // Name returns the source name for logging.

@@ -235,6 +235,22 @@ as `invalid_name_count` and `invalid_names` while any remain. The daemon does
 not rename or move anything; the fix is yours to make, usually `mv` to replace
 the offending character.
 
+**Conflicted copies.** When the client cannot merge two versions of a file it
+keeps both, naming one `report (conflicted copy 2026-04-10 191233).pdf`. That
+file then syncs perfectly well, so nothing ever tells you it exists, and they
+collect in the tree for years.
+
+The daemon counts them at startup and as they appear:
+
+```
+level=INFO msg="found conflicted copies left by the sync client" count=25 newest="report (conflicted copy 2026-04-10 191233).pdf, …"
+```
+
+The health endpoint carries `conflict_file_count` and `conflict_files`, the
+newest ten with their modification times, so you can tell a conflict from this
+morning from one left three years ago. Nothing is deleted; deciding which copy
+to keep is yours.
+
 **Debug logging and the journal.** `logging.level: debug` turns up the daemon's
 own detail. It does not, by default, dump `nextcloudcmd`'s output: one sync can
 emit tens of thousands of client lines, and journald drops messages past its

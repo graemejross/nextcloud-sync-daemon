@@ -214,14 +214,26 @@ func run() int {
 	// Names holding control characters break the sync for the whole tree, not
 	// just for themselves, so find them before the first sync rather than
 	// after the first failure (Refs #45).
-	if res, err := scan.Tree(cfg.Sync.LocalDir); err != nil {
-		logger.Warn("could not scan for unusable filenames", "dir", cfg.Sync.LocalDir, "error", err)
-	} else if res.Total > 0 {
-		logger.Warn("found filenames the server will reject — rename them or every sync will fail",
-			"count", res.Total,
-			"paths", res.Summary(),
-		)
-		healthStatus.SetInvalidNames(res.Paths, res.Total)
+	if found, err := scan.Tree(cfg.Sync.LocalDir); err != nil {
+		logger.Warn("could not scan the sync directory", "dir", cfg.Sync.LocalDir, "error", err)
+	} else {
+		if found.InvalidNames.Total > 0 {
+			logger.Warn("found filenames the server will reject — rename them or every sync will fail",
+				"count", found.InvalidNames.Total,
+				"paths", found.InvalidNames.Summary(),
+			)
+			healthStatus.SetInvalidNames(found.InvalidNames.Paths, found.InvalidNames.Total)
+		}
+
+		// Conflicted copies sync perfectly well, so nothing else ever mentions
+		// them; they accumulate for years unnoticed (Refs #47).
+		if found.ConflictTotal > 0 {
+			logger.Info("found conflicted copies left by the sync client",
+				"count", found.ConflictTotal,
+				"newest", scan.ConflictSummary(found.Conflicts),
+			)
+			healthStatus.SetConflictFiles(found.Conflicts, found.ConflictTotal)
+		}
 	}
 
 	var sources []daemon.EventSource

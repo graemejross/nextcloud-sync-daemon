@@ -421,3 +421,53 @@ func TestWatcherQuietOnCleanNames(t *testing.T) {
 		t.Errorf("health endpoint reported a finding on a clean tree: %s", body)
 	}
 }
+
+// A conflicted copy written while the daemon runs is counted, once, without a
+// warning: it is not an error, it is something the user should know about
+// (Refs #47).
+func TestWatcherCountsConflictFiles(t *testing.T) {
+	dir := t.TempDir()
+	status := health.NewStatus()
+
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	w, err := New(dir, 50*time.Millisecond, nil, logger, status)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trigger := make(chan daemon.Event, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- w.Start(ctx, trigger) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	conflict := filepath.Join(dir, "report (conflicted copy 2026-04-10 191233).pdf")
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(conflict, []byte("hello"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	select {
+	case <-trigger:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no sync event within 2 seconds")
+	}
+	cancel()
+	<-done
+
+	rec := httptest.NewRecorder()
+	status.Handler()(rec, httptest.NewRequest("GET", "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `"conflict_file_count":1`) {
+		t.Errorf("health did not report exactly one conflicted copy: %s", body)
+	}
+	if strings.Contains(buf.String(), "control characters") {
+		t.Errorf("a conflicted copy was warned about as an invalid name:\n%s", buf.String())
+	}
+}

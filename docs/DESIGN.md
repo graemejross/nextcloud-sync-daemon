@@ -380,7 +380,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStartPre=-/usr/bin/pkill -f nextcloudcmd
+KillMode=control-group
 ExecStart=/usr/local/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
 Restart=on-failure
 RestartSec=5
@@ -399,7 +399,7 @@ WantedBy=default.target
 
 - **Type=notify**: Daemon signals readiness after config is validated and all sources are started.
 - **WatchdogSec**: Daemon sends heartbeats every WatchdogSec/2 from an independent goroutine, so long-running syncs don't trip the watchdog. 1800s (30 min) gives ample headroom on slow servers and large trees.
-- **ExecStartPre pkill**: Belt-and-braces cleanup of any orphan `nextcloudcmd` from before kernel-level orphan prevention (`Pdeathsig=SIGKILL`) was in place. Safe to keep; it has no effect when no orphan exists.
+- **No ExecStartPre pkill** (#55): orphan cleanup relies on `Pdeathsig=SIGKILL`, which kills each `nextcloudcmd` with the daemon, and on `KillMode=control-group`, which kills anything left in the unit's cgroup when it stops. An earlier `pkill -f nextcloudcmd` here killed every matching process the unit could see, including ones this daemon never started.
 - **Single-instance flock**: At startup the daemon takes an exclusive flock on `/tmp/nextcloud-sync-daemon.lock`. A second instance fails fast with the holder PID — defence in depth against duplicate daemons regardless of how they were launched.
 - **ReadWritePaths**: Only the sync directory needs write access.
 

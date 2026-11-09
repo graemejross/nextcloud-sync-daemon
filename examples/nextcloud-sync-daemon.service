@@ -24,10 +24,12 @@ Wants=network-online.target
 # Type=notify: daemon signals readiness after config validation and source startup
 Type=notify
 
-# Belt-and-braces: kill any orphan nextcloudcmd before starting (Refs #27).
-# The daemon's Pdeathsig handles orphans at the kernel level, but if a user
-# manually started nextcloudcmd outside the daemon this catches it too.
-ExecStartPre=-/usr/bin/pkill -f nextcloudcmd
+# Orphan cleanup needs no ExecStartPre (Refs #27, #55). Each nextcloudcmd the
+# daemon starts has Pdeathsig=SIGKILL, so it dies with the daemon, and
+# KillMode=control-group kills anything left in this unit's cgroup when the unit
+# stops. A pkill here would also kill nextcloudcmd processes this daemon never
+# started: other users', other instances', or one run by hand.
+KillMode=control-group
 
 ExecStart=/usr/local/bin/nextcloud-sync-daemon --config /etc/nextcloud-sync-daemon/config.yaml
 
